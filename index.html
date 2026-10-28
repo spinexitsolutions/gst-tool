@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="hi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GST Return Tool — Meesho, Amazon, Flipkart → GSTR-1 JSON</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <h1>GST Return Tool</h1>
+      <p class="sub">Meesho • Amazon • Flipkart • aur sab platforms ki sales report daaliye → tool calculate + verify karega → <b>GSTR-1 JSON</b> banega jo GST portal par upload hota hai.</p>
+      <p class="privacy">🔒 Aapka data aapke computer par hi rehta hai — kahin upload nahi hota.</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <!-- Step 1 -->
+    <section class="card">
+      <h2><span class="step">1</span> Business details</h2>
+      <div class="grid3">
+        <label>Aapka GSTIN
+          <input id="gstin" maxlength="15" placeholder="27AAPFU0939F1ZV" autocomplete="off" spellcheck="false">
+          <small id="gstinInfo" class="hint"></small>
+        </label>
+        <label>Return month
+          <select id="month"></select>
+        </label>
+        <label>Year
+          <select id="year"></select>
+        </label>
+      </div>
+      <div class="opts">
+        <label class="chk"><input type="checkbox" id="excludeOut"> Return period ke bahar ki dates wali rows hata do</label>
+        <label class="chk"><input type="checkbox" id="includeDocs" checked> Table 13 (Documents issued) bhi JSON mein daalo</label>
+      </div>
+    </section>
+
+    <!-- Step 2 -->
+    <section class="card">
+      <h2><span class="step">2</span> Platform reports upload kijiye</h2>
+      <div id="drop" class="drop" tabindex="0">
+        <p><b>Files yahan drag &amp; drop kijiye</b> ya click karke chuniye</p>
+        <p class="hint">.xlsx, .xls, .csv — ek saath kai files (Amazon MTR, Flipkart Sales Report, Meesho tcs_sales / tcs_sales_return, other platforms template)</p>
+        <input type="file" id="files" multiple accept=".xlsx,.xls,.csv">
+      </div>
+      <div id="fileList"></div>
+      <details class="help">
+        <summary>Report kahan se download karein?</summary>
+        <ul>
+          <li><b>Amazon:</b> Seller Central → Reports → Tax Document Library → <i>MTR (Merchant Tax Report)</i> — B2C aur B2B dono download karke (zip ho to extract karke) CSV daaliye.</li>
+          <li><b>Flipkart:</b> Seller Hub → Reports → Tax Reports → <i>Sales Report / GSTR report</i> (month select kijiye) — poori Excel file daaliye, tool "Sales Report" sheet khud padh lega.</li>
+          <li><b>Meesho:</b> Supplier Panel → Payments → <i>Download GST Report</i> → zip extract karke <code>tcs_sales.xlsx</code> aur <code>tcs_sales_return.xlsx</code> dono daaliye.</li>
+          <li><b>Baaki platforms / apni website / offline:</b> <a href="#" id="dlTemplate">Template download kijiye</a>, usme data bhar ke upload kijiye. <code>platform</code> column mein naam (jaise JioMart, Myntra) likhiye; apni website ke liye khali chhodiye.</li>
+          <li>Demo ke liye repo ke <code>sample-data/</code> folder ki files try kijiye (GSTIN <code>27AAPFU0939F1ZV</code>, October 2025).</li>
+        </ul>
+      </details>
+    </section>
+
+    <!-- Step 3 -->
+    <section class="card" id="ecoCard" hidden>
+      <h2><span class="step">3</span> E-commerce operator (TCS) GSTIN <span class="tag">Table 14</span></h2>
+      <p class="hint">Platform ka woh GSTIN jo aapke state mein TCS kaat-ta hai. GST portal → Services → Returns → <i>TCS/TDS credit received</i> ya GSTR-2B mein mil jayega. Ek baar daalne par browser yaad rakhega.</p>
+      <div id="ecoInputs" class="grid3"></div>
+    </section>
+
+    <!-- Results -->
+    <section class="card" id="results" hidden>
+      <h2><span class="step">4</span> Calculation &amp; verification</h2>
+      <div id="status"></div>
+      <div id="kpis" class="kpis"></div>
+
+      <h3>Platform-wise summary</h3>
+      <div id="platforms" class="tbl"></div>
+
+      <h3>Verification report</h3>
+      <div id="issues"></div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="b2cs">B2C (Table 7)</button>
+        <button class="tab" data-tab="b2b">B2B / CDNR / B2CL</button>
+        <button class="tab" data-tab="hsn">HSN (Table 12)</button>
+        <button class="tab" data-tab="eco">ECO (Table 14)</button>
+        <button class="tab" data-tab="docs">Documents (Table 13)</button>
+        <button class="tab" data-tab="g3b">GSTR-3B</button>
+        <button class="tab" data-tab="json">JSON</button>
+      </div>
+      <div id="tabBody" class="tbl"></div>
+
+      <div class="actions">
+        <button id="dlJson" class="primary">⬇ GSTR-1 JSON download</button>
+        <button id="dlExcel">⬇ Excel report (CA ke liye)</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="step">5</span> GST portal par upload kaise karein</h2>
+      <ol class="steps">
+        <li><a href="https://www.gst.gov.in" target="_blank" rel="noopener">gst.gov.in</a> par login → <b>Services → Returns → Returns Dashboard</b> → financial year aur month chuniye → <b>Search</b>.</li>
+        <li>GSTR-1 tile mein <b>Prepare Offline</b> → <b>Upload</b> tab → <b>Choose File</b> → is tool ki JSON file chuniye.</li>
+        <li>Status "Processed" hone tak wait kijiye (kuch minute). Error aaye to <i>Generate error report</i> se dekhiye.</li>
+        <li>Wapas <b>Prepare Online</b> → tables check kijiye → <b>Generate GSTR-1 Summary</b> → <b>File Statement with DSC/EVC</b>.</li>
+        <li>GSTR-1 file hone ke baad GSTR-3B ka Table 3.1 aur 3.2 apne aap bhar jaata hai — tool ke <i>GSTR-3B</i> tab se milaan kar lijiye.</li>
+      </ol>
+      <p class="hint">⚠️ Ye tool aapki madad ke liye hai — file karne se pehle numbers ek baar zaroor check kijiye (ya CA se karwaiye).</p>
+    </section>
+  </main>
+
+  <footer class="wrap foot">Offline tool • Koi server nahi • <a href="https://github.com/spinexitsolutions/gst-tool" target="_blank" rel="noopener">Source</a></footer>
+
+  <script src="js/vendor/xlsx.full.min.js"></script>
+  <script src="js/gst-core.js"></script>
+  <script src="js/parsers.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

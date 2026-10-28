@@ -1,0 +1,14 @@
+{
+  "name": "gst-tool",
+  "version": "1.0.0",
+  "description": "Meesho / Amazon / Flipkart sales reports se GSTR-1 JSON banane wala offline tool",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "samples": "node tools/make-samples.js",
+    "start": "npx --yes http-server -p 8080 ."
+  },
+  "devDependencies": {
+    "xlsx": "0.18.5"
+  }
+}

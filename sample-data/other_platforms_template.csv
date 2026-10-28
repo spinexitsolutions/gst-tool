@@ -1,0 +1,3 @@
+platform,invoice_no,invoice_date,type,order_id,buyer_gstin,pos_state,hsn,description,qty,uqc,taxable_value,gst_rate,igst,cgst,sgst,cess
+JioMart,JM/25-26/0001,08-10-2025,sale,JM10001,,Kerala,61091000,Cotton T-Shirt Men,1,NOS,476.19,5,23.81,,,0
+,WEB/25-26/0001,16-10-2025,sale,W1001,,Maharashtra,73239390,Steel Water Bottle 1L,2,NOS,847.46,18,,76.27,76.27,0
