@@ -11,7 +11,7 @@ const SAMPLES = path.join(__dirname, '..', 'sample-data');
 
 function loadSamples() {
   let records = [];
-  fs.readdirSync(SAMPLES).forEach((f) => {
+  fs.readdirSync(SAMPLES).filter((f) => /\.(csv|xlsx)$/.test(f)).forEach((f) => {
     const wb = XLSX.read(fs.readFileSync(path.join(SAMPLES, f)), { type: 'buffer', cellDates: true, raw: f.endsWith('.csv') });
     records = records.concat(P.parseWorkbook(XLSX, wb, f).records);
   });

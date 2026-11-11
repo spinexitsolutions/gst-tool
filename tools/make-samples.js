@@ -139,3 +139,14 @@ writeCsv('other_platforms_template.csv', [
 ]);
 
 console.log('Sample files written to', OUT);
+
+// ------------------------------------------------------------ GST portal "TDS and TCS Credit Received" (demo)
+// Field names follow the portal's GSTR-8 style; the tool also accepts other names, Excel downloads and copy-paste.
+fs.writeFileSync(path.join(OUT, 'gst_portal_tcs_credit_oct2025.json'), JSON.stringify({
+  gstin: SELLER, ret_period: '102025',
+  tcs: [
+    { ctin: '27AAICA3918J1CT', trdnm: 'Amazon Seller Services Private Limited', supR: 6513.32, retsupR: 476.19, amt: 6037.13, iamt: 25.69, camt: 2.25, samt: 2.25 },
+    { ctin: '27AACCF0683K1CS', trdnm: 'Flipkart Internet Private Limited', supR: 2691.73, retsupR: 499, amt: 2192.73, iamt: 6.35, camt: 2.33, samt: 2.33 },
+    { ctin: '27AAFCF6235C1C6', trdnm: 'Fashnear Technologies Private Limited', supR: 1767.54, retsupR: 285.71, amt: 1481.83, iamt: 6.0, camt: 0.71, samt: 0.71 },
+  ],
+}, null, 2));

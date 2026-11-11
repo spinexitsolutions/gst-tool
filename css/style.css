@@ -103,3 +103,8 @@ tr.note td { white-space: normal; background: var(--warn-soft); font-size: 12px;
 tr.note ul { margin: 0; padding-left: 18px; }
 .hsnbox { display: flex; flex-direction: column; justify-content: flex-end; gap: 4px; }
 .linkbtn { color: var(--brand); font-weight: 500; cursor: pointer; flex-direction: row; text-decoration: underline; }
+.tcs-how { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; font-size: 13px; }
+.tcs-how > div { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.tcs-how textarea { width: 100%; margin-top: 8px; font: 12px ui-monospace, monospace; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); resize: vertical; }
+#tcsStatus { margin-top: 12px; }
+.badge.tcs { background: var(--ok-soft); color: var(--ok); }

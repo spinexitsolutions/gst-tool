@@ -51,8 +51,8 @@
       <h2><span class="step">2</span> Platform reports upload kijiye</h2>
       <div id="drop" class="drop" tabindex="0">
         <p><b>Files yahan drag &amp; drop kijiye</b> ya click karke chuniye</p>
-        <p class="hint">.xlsx, .xls, .csv — ek saath kai files (Amazon MTR, Flipkart Sales Report, Meesho tcs_sales / tcs_sales_return, other platforms template)</p>
-        <input type="file" id="files" multiple accept=".xlsx,.xls,.csv">
+        <p class="hint">.xlsx, .xls, .csv, .json, .zip — ek saath kai files (Amazon MTR, Flipkart Sales Report, Meesho tcs_sales / tcs_sales_return, other platforms template, aur GST portal ki TCS credit file)</p>
+        <input type="file" id="files" multiple accept=".xlsx,.xls,.csv,.json,.zip">
       </div>
       <div id="fileList"></div>
       <details class="help">
@@ -100,10 +100,18 @@
     <!-- TCS reconciliation -->
     <section class="card" id="tcsCard" hidden>
       <h2><span class="step">✓</span> TCS credit se sales ka milaan <span class="tag">GSTR-8 vs reports</span></h2>
-      <p class="hint">GST portal → <b>Services → Returns → Returns Dashboard</b> → wahi month chuniye → <b>"TDS and TCS Credit Received"</b> → <b>TCS</b> tab. Har platform (Amazon, Flipkart, Meesho) ki line ke numbers neeche bhar dijiye. Tool aapki report wali sales se milaa kar batayega ki farak kahan hai.</p>
-      <div id="tcsInputs" class="tbl"></div>
+      <div class="tcs-how">
+        <div><b>Tarika 1 — file daaliye (sabse aasaan):</b> GST portal → Returns Dashboard → month chuniye → <b>"TDS and TCS Credit Received"</b> → <b>Prepare Offline / Download</b> se file (JSON / ZIP / Excel) download karke upar wale <b>upload box</b> mein baaki reports ke saath daal dijiye.</div>
+        <div><b>Tarika 2 — copy-paste:</b> portal par TCS wali table ko mouse se select karke <b>Ctrl+C</b> kijiye aur neeche paste kar dijiye (<b>Ctrl+V</b>).
+          <textarea id="tcsPaste" rows="3" placeholder="Portal ki TCS table yahan paste kijiye…"></textarea></div>
+      </div>
+      <div id="tcsStatus"></div>
       <h3>Milaan ka result</h3>
       <div id="tcsResult" class="tbl"></div>
+      <details class="help" id="tcsManual">
+        <summary>Numbers dekhiye / haath se badliye</summary>
+        <div id="tcsInputs" class="tbl"></div>
+      </details>
     </section>
 
     <!-- Results -->

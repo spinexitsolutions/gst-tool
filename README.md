@@ -36,21 +36,31 @@ Demo ke liye `sample-data/` folder ki saari files ek saath upload kijiye
 - Flipkart ki **Cash Back Report** ab calculation mein shamil hai: credit note sale ko kam karta hai, debit note badhata hai. HSN, state ya rate na ho to usi order ki sale se le liya jaata hai. Ye notes Table 13 mein bhi jaate hain (Debit Note = 4, Credit Note = 5).
 - Jis file mein ek report sheet pehchan li gayi, uski baaki sheets (jaise Help) chhod di jaati hain. Zaroorat ho to sheet ke naam par click karke unhe bhi map kar sakte hain.
 
-## TCS credit se sales ka milaan
+## TCS credit se sales ka milaan (automatic)
 
 E-commerce platform har mahine aapki net sale aur kata hua TCS GST portal par report karta hai (GSTR-8).
-Agar aapke GSTR-1 ke figures us se match na hon, to notice aa sakta hai. Isliye file karne se pehle milaan zaroori hai.
+Agar aapke GSTR-1 ke figures us se match na hon, to notice aa sakta hai. Tool ye milaan apne aap karta hai. Haath se kuch bharna nahi padta.
 
-1. GST portal → **Services → Returns → Returns Dashboard** → month chuniye → **TDS and TCS Credit Received** → **TCS** tab.
-2. Har platform ki line se ye 6 numbers tool ke **"TCS credit se sales ka milaan"** box mein bhariye:
-   Gross value, Returns, Net amount, IGST, CGST, SGST.
-3. Tool har platform ke liye batata hai:
-   - **✓ Match**, **≈ Thoda farak** (₹100 ya 0.5% tak), ya **✗ Match nahi**
-   - Sales, returns aur net value mein kitna farak hai
-   - Aapki sale par kitna TCS banna chahiye: 0.5% (Jul 2024 se pehle 1%). Inter-state par IGST, same state par CGST + SGST.
-   - Farak ki sambhavit wajah, jaise pichhle mahine ke returns, chhooti hui report file, ya customer state ka alag hona
+**Portal ka data tool mein daalne ke 2 tarike:**
+1. **File:** GST portal → Returns Dashboard → month → **TDS and TCS Credit Received** → Prepare Offline / Download.
+   Jo file mile (JSON, ZIP ya Excel), use baaki sales reports ke saath upload box mein daal dijiye.
+2. **Copy-paste:** portal par TCS table select karke Ctrl+C kijiye, aur tool ke TCS box mein Ctrl+V.
 
-Bhare hue numbers har GSTIN aur mahine ke liye browser mein yaad rehte hain. Excel report mein **"TCS milaan"** sheet bhi aati hai.
+**Tool khud ye karta hai:**
+- Har line ko sahi platform se jodta hai: trade name (Amazon Seller Services, Flipkart Internet, Fashnear/Meesho...) se, pehle se saved GSTIN se, ya amount se. Na pehchane to ek baar dropdown se chuniye, tool yaad rakhega.
+- Platforms ke **ECO GSTIN Table 14 mein apne aap** bhar deta hai.
+- Har platform ke liye batata hai:
+  - **✓ Match**, **≈ Thoda farak** ya **✗ Match nahi**
+  - Sales, returns aur net value ka farak
+  - Kitna TCS banna chahiye tha: 0.5% (Jul 2024 se pehle 1%). Inter-state par IGST, same state par CGST + SGST.
+  - Farak ki sambhavit wajah
+- Portal ki file kisi aur mahine ki ho to warning deta hai.
+- Excel report mein **"TCS milaan"** sheet bhi aati hai.
+
+Demo ke liye `sample-data/gst_portal_tcs_credit_oct2025.json` dekhiye.
+
+Note: GSTN ne is file ka official format publish nahi kiya hai. Isliye tool column ke naam pehchan kar padhta hai.
+Agar aapki portal file na padhi jaye, to copy-paste wala tarika use kijiye, ya file ka format bhejiye.
 
 ## HSN milaan
 

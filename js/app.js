@@ -97,11 +97,22 @@
       if (state.files.some((x) => x.name === f.name && x.size === f.size)) return; // same file twice
       const reader = new FileReader();
       reader.onload = () => {
-        const entry = { name: f.name, size: f.size };
+        const entry = { name: f.name, size: f.size, records: [], sheets: [], unrecognized: [], raw: [] };
         try {
-          const isCsv = /\.csv$/i.test(f.name);
-          const wb = XLSX.read(new Uint8Array(reader.result), { type: 'array', cellDates: true, raw: isCsv });
-          Object.assign(entry, P.parseWorkbook(XLSX, wb, f.name, store.get('mappings', {})));
+          const data = new Uint8Array(reader.result);
+          if (/\.(json|zip)$/i.test(f.name)) {
+            entry.tcs = readTcsFile(f.name, data);
+            if (!entry.tcs.length) entry.error = 'Is file mein TCS credit ka data nahi mila';
+          } else {
+            const isCsv = /\.csv$/i.test(f.name);
+            const wb = XLSX.read(data, { type: 'array', cellDates: true, raw: isCsv });
+            Object.assign(entry, P.parseWorkbook(XLSX, wb, f.name, store.get('mappings', {})));
+            if (!entry.sheets.length) { // maybe the portal's TCS credit sheet
+              const tcs = [];
+              entry.raw.forEach((r) => { tcs.push(...P.parseTcsCredit(r.rows, $('gstin').value).entries); });
+              if (tcs.length) { entry.tcs = tcs; entry.raw = []; entry.unrecognized = []; }
+            }
+          }
         } catch (err) {
           entry.error = /password|encrypt/i.test(err.message) ? 'File password-protected hai — Excel mein khol kar bina password ke save kijiye' : 'File padh nahi paye: ' + err.message;
           entry.records = []; entry.sheets = []; entry.unrecognized = []; entry.raw = [];
@@ -112,6 +123,24 @@
       };
       reader.readAsArrayBuffer(f);
     });
+  }
+
+  /** TCS credit lines from a portal JSON, or from every JSON inside a ZIP download. */
+  function readTcsFile(name, data) {
+    const texts = [];
+    if (/\.zip$/i.test(name)) {
+      const z = XLSX.CFB.read(data, { type: 'array' });
+      z.FileIndex.forEach((fi, i) => { if (/\.json$/i.test(z.FullPaths[i]) && fi.content) texts.push(new TextDecoder().decode(fi.content)); });
+    } else texts.push(new TextDecoder().decode(data));
+    const out = [];
+    texts.forEach((t) => {
+      let obj;
+      try { obj = JSON.parse(t.replace(/^\uFEFF/, '')); } catch (e) { return; }
+      const res = P.parseTcsCredit(obj, $('gstin').value, period());
+      out.push(...res.entries);
+      if (res.periods.length) out.periods = (out.periods || []).concat(res.periods);
+    });
+    return out;
   }
 
   // Sheets that look like data (enough columns and rows) — the rest (Help, notes) are just listed.
@@ -127,11 +156,12 @@
         if (s.mapped) parts.push('<span class="hint">aapki column mapping se</span>');
         if (!s.count) parts.push('<span class="hint err-text">Header mila par data rows nahi hain — shayad is mahine is platform par sale nahi hui, ya khali report download hui hai.</span>');
       });
+      if (f.tcs && f.tcs.length) parts.push('<span class="badge tcs">GST portal TCS credit · ' + f.tcs.length + ' platform(s)</span><span class="hint">milaan neeche "TCS" box mein</span>');
       if (f.error) parts.push('<span class="badge bad">' + esc(f.error) + '</span>');
       // When a file already has a recognised report sheet, its other sheets (Cash Back, TDS...) are side reports.
       const data = f.sheets.length ? [] : (f.raw || []).filter(isDataSheet);
       const other = (f.raw || []).filter((r) => data.indexOf(r) < 0);
-      if (!f.error && !f.sheets.length && !data.length) parts.push('<span class="badge bad">Is file mein koi data sheet nahi mili</span>');
+      if (!f.error && !f.sheets.length && !data.length && !(f.tcs && f.tcs.length)) parts.push('<span class="badge bad">Is file mein koi data sheet nahi mili</span>');
       data.forEach((r) => {
         parts.push('<span class="badge bad">Format pehchana nahi gaya' + ((f.raw.length > 1 || f.sheets.length) ? ' · ' + esc(r.sheet) : '') + ' · ' + r.dataRows.toLocaleString('en-IN') + ' rows</span>' +
           '<button class="small primary" data-map="' + i + '|' + esc(r.sheet) + '">Columns khud chuniye</button>');
@@ -234,6 +264,22 @@
     recompute();
   }
 
+  function initTcsPaste() {
+    let timer = null;
+    $('tcsPaste').addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const text = $('tcsPaste').value;
+        state.tcsPaste = text.trim() ? P.parseTcsCredit(text, $('gstin').value, period()).entries : [];
+        if (text.trim() && !state.tcsPaste.length) {
+          $('tcsStatus').innerHTML = '<div class="issue error">Paste kiye text mein TCS ki line nahi mili. Portal par poori table (GSTIN se SGST tak) select karke copy kijiye.</div>';
+          return;
+        }
+        recompute();
+      }, 300);
+    });
+  }
+
   function initMapper() {
     $('mapHeaderRow').addEventListener('change', () => {
       state.map.headerRow = +$('mapHeaderRow').value;
@@ -256,12 +302,14 @@
 
   function recompute() {
     const records = state.files.reduce((a, f) => a.concat(f.records), []);
-    if (!state.files.length) { $('results').hidden = true; $('ecoCard').hidden = true; state.result = null; return; }
-    state.result = C.processRecords(records, {
+    if (!state.files.length) { $('results').hidden = true; $('ecoCard').hidden = true; $('tcsCard').hidden = true; state.result = null; return; }
+    const run = () => C.processRecords(records, {
       gstin: $('gstin').value, period: period(), ecoGstins: ecoGstins(),
       excludeOutOfPeriod: $('excludeOut').checked, includeDocs: $('includeDocs').checked,
       hsnMaster: state.hsn ? state.hsn.codes : null, aatoAbove5Cr: $('aato').value === 'above5',
     });
+    state.result = run();
+    if (applyTcs()) state.result = run(); // ECO GSTINs taken from the portal data change Table 14
     state.records = records;
     render();
   }
@@ -293,15 +341,73 @@
   const tcsKey = () => 'tcs.' + $('gstin').value + '.' + period();
   function tcsPortal() { return store.get(tcsKey(), {}); }
 
+  /** All TCS credit lines from uploaded portal files and the paste box (later sources win). */
+  function tcsEntries() {
+    const map = new Map();
+    state.files.forEach((f) => (f.tcs || []).forEach((e) => map.set(e.etin, e)));
+    (state.tcsPaste || []).forEach((e) => map.set(e.etin, e));
+    return Array.from(map.values());
+  }
+
+  /**
+   * Fills portal figures and ECO GSTINs from the portal data, matched to platforms automatically.
+   * Returns true when an ECO GSTIN changed (Table 14 must be rebuilt).
+   */
+  function applyTcs() {
+    const entries = tcsEntries();
+    state.tcsMatch = [];
+    if (!entries.length) return false;
+    const eco = state.result.summary.eco;
+    const assigned = store.get('tcsAssign', {});
+    const pre = []; const rest = [];
+    entries.forEach((e) => (assigned[e.etin] && eco.some((x) => x.platform === assigned[e.etin]) ? pre.push({ entry: e, platform: assigned[e.etin], how: 'aapne chuna' }) : rest.push(e)));
+    const free = eco.filter((x) => !pre.some((m) => m.platform === x.platform));
+    state.tcsMatch = pre.concat(P.matchTcsToPlatforms(rest, free, ecoGstins()));
+
+    const portal = tcsPortal(); const ecoAll = ecoGstins(); let changed = false;
+    state.tcsMatch.forEach((m) => {
+      if (!m.platform) return;
+      portal[m.platform] = {};
+      TCS_FIELDS.forEach(([f]) => { if (m.entry[f] != null) portal[m.platform][f] = String(m.entry[f]); });
+      if (ecoAll[m.platform] !== m.entry.etin) { ecoAll[m.platform] = m.entry.etin; changed = true; }
+    });
+    store.set(tcsKey(), portal);
+    if (changed) store.set('eco.' + $('gstin').value, ecoAll);
+    return changed;
+  }
+
   function renderTcs() {
     const eco = state.result.summary.eco;
     $('tcsCard').hidden = !eco.length;
     if (!eco.length) return;
+
+    const match = state.tcsMatch || [];
+    const label = (p) => (eco.find((e) => e.platform === p) || {}).label || p;
+    let status = '';
+    if (!match.length) status = '<div class="issue info">Portal ka TCS data abhi nahi mila — upar diye kisi bhi tarike se daaliye. Tool khud har platform se milaa dega.</div>';
+    else {
+      const ok = match.filter((m) => m.platform);
+      status = '<div class="issue info">✓ GST portal ke data se <b>' + ok.length + '</b> platform apne aap bhare gaye: ' +
+        ok.map((m) => esc(label(m.platform)) + ' <span class="hint">(' + esc(m.entry.etin) + ', ' + esc(m.how === 'naam' ? 'naam se pehchana' : m.how === 'GSTIN' ? 'GSTIN se pehchana' : m.how === 'amount' ? 'amount se andaaza' : 'aapne chuna') + ')</span>').join(', ') +
+        '. Inke ECO GSTIN Table 14 mein bhi daal diye gaye.</div>';
+      match.filter((m) => !m.platform).forEach((m) => {
+        status += '<div class="issue warning">Portal par <b>' + esc(m.entry.name || m.entry.etin) + '</b> (' + esc(m.entry.etin) + ', net ₹' + money(m.entry.net) + ') ka TCS hai, par ye kis platform ka hai pata nahi chala: ' +
+          '<select data-assign="' + esc(m.entry.etin) + '"><option value="">— platform chuniye —</option>' + eco.map((e) => '<option value="' + esc(e.platform) + '">' + esc(e.label) + '</option>').join('') + '</select>' +
+          ' <span class="hint">(Agar is platform ki sales report upload nahi ki, to woh bhi daaliye — warna ye sale GSTR-1 mein chhoot jayegi.)</span></div>';
+      });
+      const periods = state.files.reduce((a, f) => a.concat((f.tcs && f.tcs.periods) || []), []);
+      if (periods.length && periods.indexOf(period()) < 0) status += '<div class="issue warning">Portal file ' + esc(periods.join(', ')) + ' mahine ki lagti hai, jabki aapne ' + esc(period()) + ' chuna hai.</div>';
+    }
+    $('tcsStatus').innerHTML = status;
+    $('tcsStatus').querySelectorAll('[data-assign]').forEach((sel) => sel.addEventListener('change', () => {
+      const all = store.get('tcsAssign', {}); all[sel.dataset.assign] = sel.value; store.set('tcsAssign', all); recompute();
+    }));
+
     const saved = tcsPortal();
     const focused = document.activeElement && document.activeElement.dataset.tcs;
     const cell = (p, f) => '<td><input class="num" inputmode="decimal" data-tcs="' + esc(p + '|' + f) + '" value="' + esc((saved[p] || {})[f] || '') + '" placeholder="0.00"></td>';
     $('tcsInputs').innerHTML = '<table><thead><tr><th>Platform (ECO)</th>' + TCS_FIELDS.map(([, l]) => '<th>' + l + '</th>').join('') + '</tr></thead><tbody>' +
-      eco.map((e) => '<tr><td><b>' + esc(e.label) + '</b><div class="hint">' + esc(e.etin || 'GSTIN upar daaliye') + '</div></td>' + TCS_FIELDS.map(([f]) => cell(e.platform, f)).join('') + '</tr>').join('') + '</tbody></table>';
+      eco.map((e) => '<tr><td><b>' + esc(e.label) + '</b><div class="hint">' + esc(e.etin || '—') + '</div></td>' + TCS_FIELDS.map(([f]) => cell(e.platform, f)).join('') + '</tr>').join('') + '</tbody></table>';
     $('tcsInputs').querySelectorAll('input').forEach((inp) => {
       if (inp.dataset.tcs === focused) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
       inp.addEventListener('change', () => {
@@ -522,4 +628,5 @@
   initSettings();
   initFiles();
   initMapper();
+  initTcsPaste();
 })();

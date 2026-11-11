@@ -153,3 +153,32 @@ test('Flipkart Cash Back Report: credit notes reduce, debit notes add, missing H
   const types = out.json.doc_issue.doc_det.map((d) => d.doc_num).sort();
   assert.deepEqual(types, [1, 4, 5]);
 });
+
+test('TCS credit: portal JSON, Excel rows with headers, and pasted screen text', () => {
+  const C = require('../js/gst-core.js');
+  const SELLER = '27AAPFU0939F1ZV';
+  const AMZ = '27AAICA3918J1CT'; const FK = '27AACCF0683K1CS';
+  const json = { gstin: SELLER, ret_period: '102025', tds: [{ gstin_ded: '27AACCF0683K1CS', amt_ded: 999, iamt: 9 }],
+    tcs: [{ ctin: AMZ, trdnm: 'Amazon Seller Services Pvt Ltd', supR: '30000', retsupR: '2000', amt: '28000', iamt: '90', camt: '25', samt: '25' },
+      { ctin: FK, trdnm: 'Flipkart Internet Pvt Ltd', supR: 5000, retsupR: 0, amt: 5000, iamt: 25, camt: 0, samt: 0 }] };
+  const j = P.parseTcsCredit(json, SELLER, '102025').entries;
+  assert.equal(j.length, 2);
+  assert.deepEqual(j[0], { etin: AMZ, name: 'Amazon Seller Services Pvt Ltd', period: '', gross: 30000, returns: 2000, net: 28000, igst: 90, cgst: 25, sgst: 25 });
+
+  const rows = [['TCS Credit Received'], ['GSTIN of e-commerce operator', 'Trade name', 'Tax period', 'Gross value of supplies made', 'Value of supplies returned', 'Net amount liable for TCS', 'Integrated Tax', 'Central Tax', 'State/UT Tax'],
+    [AMZ, 'Amazon Seller Services', 'October-2025', '30,000.00', '2,000.00', '28,000.00', '90.00', '25.00', '25.00']];
+  assert.equal(P.parseTcsCredit(rows, SELLER).entries[0].net, 28000);
+
+  const pasted = AMZ + '\tAmazon Seller Services\tOctober-2025\t30,000.00\t2,000.00\t28,000.00\t90.00\t25.00\t25.00\tAccepted\n' +
+    'random line\n' + FK + '\tFlipkart Internet\tOctober-2025\t5,000.00\t0.00\t5,000.00\t25.00\t0.00\t0.00';
+  const t = P.parseTcsCredit(pasted, SELLER).entries;
+  assert.equal(t.length, 2);
+  assert.equal(t[1].igst, 25);
+  assert.equal(t[0].returns, 2000);
+
+  // Platform matching: by trade name, then by amount
+  const eco = [{ platform: 'amazon', suppval: 28000 }, { platform: 'flipkart', suppval: 4990 }, { platform: 'meesho', suppval: 1200 }];
+  const m = P.matchTcsToPlatforms([{ etin: AMZ, name: 'Amazon Seller Services', net: 28000 }, { etin: FK, name: '', net: 5000 }, { etin: '27AAFCF6235C1C6', name: 'XYZ', net: 99999 }], eco, {});
+  assert.deepEqual(m.map((x) => x.platform), ['amazon', 'flipkart', null]);
+  assert.equal(C.isValidGSTIN(AMZ), true);
+});

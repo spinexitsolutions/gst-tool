@@ -478,7 +478,146 @@
     return codes;
   }
 
+  // ---------------------------------------------------------------- TCS credit received (GSTR-8 data from the portal)
+  const TCS_FIELD_TESTS = {
+    returns: (k) => /ret/.test(k) && /sup|val|amt/.test(k) || /^returns?/.test(k),
+    gross: (k) => !/ret/.test(k) && /^(supr|sup|supp|supply|suppval|supplies|gross|grossval|grossvalue|grval|totsup|totval|valueofsupplies|valsup)/.test(k),
+    net: (k) => !/ret/.test(k) && /^(amt|net|netamt|netvalue|netamount|amtliable|liable|amountliable)/.test(k),
+    igst: (k) => /^(iamt|igst|integrated)/.test(k),
+    cgst: (k) => /^(camt|cgst|central)/.test(k),
+    sgst: (k) => /^(samt|sgst|utgst|state)/.test(k),
+  };
+  const fieldOf = (k) => Object.keys(TCS_FIELD_TESTS).find((f) => TCS_FIELD_TESTS[f](k)) || null;
+
+  /** Merges entries of the same operator (and period, when known) into one line. */
+  function mergeTcs(entries, period) {
+    const periods = new Set(entries.map((e) => e.period).filter(Boolean));
+    const use = period && periods.has(period) ? entries.filter((e) => !e.period || e.period === period) : entries;
+    const map = new Map();
+    use.forEach((e) => {
+      const m = map.get(e.etin) || { etin: e.etin, name: '', period: e.period || '' };
+      if (!m.name && e.name) m.name = e.name;
+      ['gross', 'returns', 'net', 'igst', 'cgst', 'sgst'].forEach((f) => {
+        if (e[f] != null) m[f] = C.round2((m[f] || 0) + Math.abs(e[f]));
+      });
+      map.set(e.etin, m);
+    });
+    const list = Array.from(map.values());
+    list.forEach((m) => { if (m.net == null && m.gross != null) m.net = C.round2(m.gross - (m.returns || 0)); });
+    return { entries: list, periods: Array.from(periods) };
+  }
+
+  function tcsFromJson(obj, sellerGstin) {
+    const out = [];
+    (function walk(o, path) {
+      if (Array.isArray(o)) { o.forEach((x) => walk(x, path)); return; }
+      if (!o || typeof o !== 'object') return;
+      if (/tds/i.test(path) && !/tcs/i.test(path)) return; // TDS (Govt deductor) lines are not marketplace TCS
+      let etin = ''; let name = ''; let period = ''; const amt = {};
+      Object.keys(o).forEach((k0) => {
+        const k = key(k0); const v = o[k0];
+        if (v && typeof v === 'object') return;
+        const sv = String(v == null ? '' : v).trim().toUpperCase();
+        if (!etin && C.isValidGSTIN(sv) && sv !== sellerGstin && /gstin|tin|gstn/.test(k)) etin = sv;
+        else if (/trdnm|tradename|lgnm|legalname|name/.test(k)) name = String(v);
+        else if (/retperiod|rtnprd|^fp$|taxperiod|period|month/.test(k) && /^\d{6}$/.test(sv)) period = sv;
+        else {
+          const f = fieldOf(k);
+          if (f && v !== '' && isFinite(C.num(v))) amt[f] = C.num(v);
+        }
+      });
+      if (etin && Object.keys(amt).length) out.push(Object.assign({ etin, name, period }, amt));
+      Object.keys(o).forEach((k0) => { if (o[k0] && typeof o[k0] === 'object') walk(o[k0], path + '/' + k0); });
+    })(obj, '');
+    return out;
+  }
+
+  function tcsFromRows(rows, sellerGstin) {
+    const out = [];
+    // 1) A header row naming the GSTIN column and amount columns
+    for (let i = 0; i < Math.min(rows.length, 20); i++) {
+      const keys = (rows[i] || []).map(key);
+      const gi = keys.findIndex((k) => /gstin|gstn/.test(k));
+      const cols = {};
+      keys.forEach((k, idx) => { const f = fieldOf(k.replace(/^(valueof|value)/, '')) || fieldOf(k); if (f && cols[f] == null && idx !== gi) cols[f] = idx; });
+      const ni = keys.findIndex((k) => /tradename|legalname|name/.test(k));
+      const pi = keys.findIndex((k) => /period|month/.test(k));
+      if (gi < 0 || Object.keys(cols).length < 2) continue;
+      for (let j = i + 1; j < rows.length; j++) {
+        const r = rows[j] || [];
+        const etin = String(r[gi] || '').trim().toUpperCase();
+        if (!C.isValidGSTIN(etin) || etin === sellerGstin) continue;
+        const e = { etin, name: ni >= 0 ? String(r[ni] || '') : '', period: pi >= 0 && /^\d{6}$/.test(String(r[pi]).trim()) ? String(r[pi]).trim() : '' };
+        Object.keys(cols).forEach((f) => { const v = r[cols[f]]; if (v !== '' && v != null) e[f] = C.num(v); });
+        out.push(e);
+      }
+      if (out.length) return out;
+    }
+    // 2) Headerless lines (copied from the portal screen): GSTIN followed by six amounts
+    rows.forEach((r) => {
+      const cells = (r || []).map((c) => String(c == null ? '' : c).trim()).filter(Boolean);
+      const gi = cells.findIndex((c) => C.isValidGSTIN(c.toUpperCase()) && c.toUpperCase() !== sellerGstin);
+      if (gi < 0) return;
+      const amounts = cells.slice(gi + 1).filter((c) => /^-?[\d,]+(\.\d+)?$/.test(c) && /[.,]|^0$/.test(c)).map(C.num);
+      if (amounts.length < 6) return;
+      const [gross, returns, net, igst, cgst, sgst] = amounts;
+      const name = cells.slice(gi + 1).find((c) => /[a-z]{3}/i.test(c)) || '';
+      out.push({ etin: cells[gi].toUpperCase(), name, period: '', gross, returns, net, igst, cgst, sgst });
+    });
+    return out;
+  }
+
+  /**
+   * Reads "TDS and TCS Credit Received" data downloaded or copied from the GST portal.
+   * input: parsed JSON, an array of rows (Excel/CSV) or pasted text.
+   * Returns { entries: [{ etin, name, period, gross, returns, net, igst, cgst, sgst }], periods }.
+   */
+  function parseTcsCredit(input, sellerGstin, period) {
+    const seller = String(sellerGstin || '').toUpperCase();
+    let raw;
+    if (typeof input === 'string') {
+      const t = input.trim();
+      if (/^[[{]/.test(t)) { try { raw = tcsFromJson(JSON.parse(t), seller); } catch (e) { raw = null; } }
+      if (!raw || !raw.length) raw = tcsFromRows(t.split(/\r?\n/).map((l) => (l.indexOf('\t') >= 0 ? l.split('\t') : l.split(/\s+/))), seller);
+    } else if (Array.isArray(input) && Array.isArray(input[0])) raw = tcsFromRows(input, seller);
+    else raw = tcsFromJson(input, seller);
+    return mergeTcs(raw || [], period);
+  }
+
+  const ECO_NAMES = [
+    [/amazon/i, 'amazon'], [/flipkart|shopsy/i, 'flipkart'], [/fashnear|meesho/i, 'meesho'], [/myntra/i, 'myntra'],
+    [/reliance retail|jiomart/i, 'jiomart'], [/ajio/i, 'ajio'], [/nykaa|fsn e-?commerce/i, 'nykaa'], [/snapdeal|ace vector/i, 'snapdeal'], [/glowroad/i, 'glowroad'],
+  ];
+
+  /**
+   * Decides which platform each portal TCS line belongs to: by trade name, by an ECO GSTIN
+   * already saved for a platform (same PAN), or by the closest net value.
+   */
+  function matchTcsToPlatforms(entries, ecoRows, savedEco) {
+    const keys = ecoRows.map((e) => e.platform);
+    const taken = new Set();
+    const result = entries.map((e) => ({ entry: e, platform: null, how: '' }));
+    result.forEach((m) => {
+      const byName = ECO_NAMES.find(([re]) => re.test(m.entry.name || ''));
+      if (byName && keys.indexOf(byName[1]) >= 0 && !taken.has(byName[1])) { m.platform = byName[1]; m.how = 'naam'; taken.add(m.platform); return; }
+      const pan = m.entry.etin.slice(2, 12);
+      const bySaved = Object.keys(savedEco || {}).find((p) => String(savedEco[p] || '').toUpperCase().slice(2, 12) === pan && keys.indexOf(p) >= 0 && !taken.has(p));
+      if (bySaved) { m.platform = bySaved; m.how = 'GSTIN'; taken.add(bySaved); }
+    });
+    result.forEach((m) => {
+      if (m.platform || m.entry.net == null) return;
+      let best = null; let diff = Infinity;
+      ecoRows.forEach((e) => {
+        if (taken.has(e.platform)) return;
+        const d = Math.abs(e.suppval - m.entry.net);
+        if (d < diff) { diff = d; best = e.platform; }
+      });
+      if (best && diff <= Math.max(500, Math.abs(m.entry.net) * 0.1)) { m.platform = best; m.how = 'amount'; taken.add(best); }
+    });
+    return result;
+  }
+
   const GENERIC_TEMPLATE_HEADERS = ['platform', 'invoice_no', 'invoice_date', 'type', 'order_id', 'buyer_gstin', 'pos_state', 'hsn', 'sku', 'description', 'qty', 'uqc', 'taxable_value', 'gst_rate', 'igst', 'cgst', 'sgst', 'cess'];
 
-  return { parseTable, parseWorkbook, parseHsnMaster, detect, fixSheetRange, applyMapping, suggestMapping, headerSignature, MAP_FIELDS, GENERIC_TEMPLATE_HEADERS };
+  return { parseTable, parseWorkbook, parseHsnMaster, parseTcsCredit, matchTcsToPlatforms, detect, fixSheetRange, applyMapping, suggestMapping, headerSignature, MAP_FIELDS, GENERIC_TEMPLATE_HEADERS };
 });
