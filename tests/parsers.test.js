@@ -67,3 +67,54 @@ test('generic template: tax optional, platform becomes ECO key', () => {
   assert.equal(records[0].taxProvided, false);
   assert.equal(records[0].pos, '32');
 });
+
+test('sheet with a wrong stored range (Flipkart export bug) still yields all rows', () => {
+  const XLSX = require('xlsx');
+  const ws = XLSX.utils.aoa_to_sheet([['Event Sub Type', 'Taxable Value (Final Invoice Amount -Taxes)', 'IGST Rate', "Customer's Delivery State"], ['Sale', 100, 5, 'Goa'], ['Sale', 200, 5, 'Goa']]);
+  ws['!ref'] = 'A1:D1'; // what the broken file declares
+  const wb = { SheetNames: ['Sales Report'], Sheets: { 'Sales Report': ws } };
+  const res = P.parseWorkbook(XLSX, wb, 'fk.xlsx');
+  assert.equal(res.sheets[0].count, 2);
+  assert.equal(res.sheets[0].rangeFixed, true);
+});
+
+test('unknown layout: suggested mapping, manual mapping and remembered mapping', () => {
+  const XLSX = require('xlsx');
+  const rows = [
+    ['Myntra Seller Tax Report'],
+    ['Packet Id', 'Order Release Date', 'Return Type', 'Ship State', 'HSN', 'Units', 'Base Value', 'Tax Rate', 'IGST Amt', 'CGST Amt', 'SGST Amt'],
+    ['P1', '05-10-2025', 'Forward', 'Karnataka', '6109', 1, 1000, 5, 50, 0, 0],
+    ['P2', '06-10-2025', 'RTO Return', 'Karnataka', '6109', 1, 1000, 5, 50, 0, 0],
+  ];
+  assert.equal(P.parseTable(rows, 'm.xlsx'), null);
+  const cols = P.suggestMapping(rows[1]);
+  assert.equal(cols.taxable_value, undefined); // "Base Value" is not guessable
+  assert.equal(cols.pos_state, 3);
+  assert.equal(cols.igst, 8);
+  assert.equal(cols.gst_rate, 7);
+  const m = { headerRow: 1, platform: 'Myntra', cols: Object.assign({}, cols, { taxable_value: 6, type: 2 }) };
+  const out = P.applyMapping(rows, m, 'm.xlsx', '');
+  assert.equal(out.records.length, 2);
+  assert.equal(out.records[0].txval, 1000);
+  assert.equal(out.records[0].pos, '29');
+  assert.equal(out.records[0].ecoKey, 'myntra');
+  assert.equal(out.records[1].kind, 'return');
+  assert.equal(out.records[1].txval, -1000);
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const wb = { SheetNames: ['Sheet1'], Sheets: { Sheet1: ws } };
+  const first = P.parseWorkbook(XLSX, wb, 'm.xlsx');
+  assert.equal(first.raw.length, 1);
+  const again = P.parseWorkbook(XLSX, wb, 'm.xlsx', { [first.raw[0].signature]: m });
+  assert.equal(again.sheets[0].mapped, true);
+  assert.equal(again.records.length, 2);
+});
+
+test('mapping with only a total tax column and an all-returns sheet', () => {
+  const rows = [['state', 'taxable', 'gst amount'], ['Goa', 100, 18]];
+  const out = P.applyMapping(rows, { headerRow: 0, cols: { pos_state: 0, taxable_value: 1, total_tax: 2 }, allReturns: true }, 'r.csv', '');
+  assert.equal(out.records[0].kind, 'return');
+  assert.equal(out.records[0].txval, -100);
+  assert.equal(out.records[0].tax, -18);
+  assert.equal(out.records[0].taxProvided, true);
+});

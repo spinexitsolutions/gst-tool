@@ -27,6 +27,14 @@ Demo ke liye `sample-data/` folder ki saari files ek saath upload kijiye
 | Meesho | Supplier Panel → Payments → **GST Report** | `tcs_sales.xlsx` + `tcs_sales_return.xlsx` dono |
 | Baaki sab (JioMart, Myntra, apni website, offline) | Tool ka **template** (`sample-data/other_platforms_template.csv`, ya app mein "Template download") | Tax khali chhodenge to rate se calculate ho jayega |
 
+## Koi report pehchani na jaye to
+
+- **"0 rows" aana:** Flipkart ki kuch Excel files ke andar galat range likhi hoti hai (sirf header row tak). Tool ab ise apne aap theek kar leta hai aur saari rows padhta hai.
+- **"Format pehchana nahi gaya":** file ke saamne **Columns khud chuniye** dabaiye.
+  Tool andaaze se columns pehle hi bhar deta hai (taxable value, state, rate, IGST/CGST/SGST, HSN...). Aap bas check kijiye aur preview dekh kar save kijiye.
+  Mapping browser mein yaad rehti hai, isliye agle mahine wahi report apne aap padhi jayegi.
+- Jis file mein ek report sheet pehchan li gayi, uski baaki sheets (Help, Cash Back...) chhod di jaati hain. Zaroorat ho to sheet ke naam par click karke unhe bhi map kar sakte hain.
+
 ## Tool kya calculate karta hai
 
 | GSTR-1 table | JSON key | Kya jaata hai |

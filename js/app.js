@@ -64,10 +64,10 @@
         try {
           const isCsv = /\.csv$/i.test(f.name);
           const wb = XLSX.read(new Uint8Array(reader.result), { type: 'array', cellDates: true, raw: isCsv });
-          Object.assign(entry, P.parseWorkbook(XLSX, wb, f.name));
+          Object.assign(entry, P.parseWorkbook(XLSX, wb, f.name, store.get('mappings', {})));
         } catch (err) {
-          entry.error = 'File padh nahi paye: ' + err.message;
-          entry.records = []; entry.sheets = []; entry.unrecognized = [];
+          entry.error = /password|encrypt/i.test(err.message) ? 'File password-protected hai — Excel mein khol kar bina password ke save kijiye' : 'File padh nahi paye: ' + err.message;
+          entry.records = []; entry.sheets = []; entry.unrecognized = []; entry.raw = [];
         }
         state.files.push(entry);
         renderFiles();
@@ -77,15 +77,141 @@
     });
   }
 
+  // Sheets that look like data (enough columns and rows) — the rest (Help, notes) are just listed.
+  const isDataSheet = (r) => r.dataRows > 0 && r.headers.filter(Boolean).length >= 4;
+
   function renderFiles() {
     $('fileList').innerHTML = state.files.map((f, i) => {
-      let badges = f.sheets.map((s) => '<span class="badge ' + s.platform + '">' + esc(C.PLATFORM_LABELS[s.platform]) + (s.isReturnFile ? ' (returns)' : '') + ' · ' + s.count + ' rows' + (f.sheets.length > 1 || s.sheet !== 'Sheet1' ? ' · ' + esc(s.sheet) : '') + '</span>').join(' ');
-      if (f.error) badges = '<span class="badge bad">' + esc(f.error) + '</span>';
-      else if (!f.sheets.length) badges = '<span class="badge bad">Format pehchana nahi gaya — sahi report ya template use kijiye</span>';
-      const skipped = f.unrecognized.length && f.sheets.length ? '<span class="hint">Chhodi gayi sheets: ' + esc(f.unrecognized.join(', ')) + '</span>' : '';
-      return '<div class="file"><span class="name">📄 ' + esc(f.name) + '</span>' + badges + skipped + '<button class="x" title="Hatao" data-i="' + i + '">×</button></div>';
+      const parts = [];
+      f.sheets.forEach((s) => {
+        const label = s.mapped ? (s.label || 'Mapped') : C.PLATFORM_LABELS[s.platform];
+        const where = f.sheets.length > 1 || (s.sheet !== 'Sheet1' && s.sheet) ? ' · ' + esc(s.sheet) : '';
+        parts.push('<span class="badge ' + (s.count ? (s.mapped ? 'generic' : s.platform) : 'bad') + '">' + esc(label) + (s.isReturnFile ? ' (returns)' : '') + ' · ' + s.count.toLocaleString('en-IN') + ' rows' + where + '</span>');
+        if (s.mapped) parts.push('<span class="hint">aapki column mapping se</span>');
+        if (!s.count) parts.push('<span class="hint err-text">Header mila par data rows nahi hain — shayad is mahine is platform par sale nahi hui, ya khali report download hui hai.</span>');
+      });
+      if (f.error) parts.push('<span class="badge bad">' + esc(f.error) + '</span>');
+      // When a file already has a recognised report sheet, its other sheets (Cash Back, TDS...) are side reports.
+      const data = f.sheets.length ? [] : (f.raw || []).filter(isDataSheet);
+      const other = (f.raw || []).filter((r) => data.indexOf(r) < 0);
+      if (!f.error && !f.sheets.length && !data.length) parts.push('<span class="badge bad">Is file mein koi data sheet nahi mili</span>');
+      data.forEach((r) => {
+        parts.push('<span class="badge bad">Format pehchana nahi gaya' + ((f.raw.length > 1 || f.sheets.length) ? ' · ' + esc(r.sheet) : '') + ' · ' + r.dataRows.toLocaleString('en-IN') + ' rows</span>' +
+          '<button class="small primary" data-map="' + i + '|' + esc(r.sheet) + '">Columns khud chuniye</button>');
+      });
+      if (other.length && (f.sheets.length || data.length)) {
+        parts.push('<span class="hint">Chhodi gayi sheets: ' + other.map((r) => isDataSheet(r)
+          ? '<a href="#" data-map="' + i + '|' + esc(r.sheet) + '" title="Is sheet ko bhi shamil karna ho to columns chuniye">' + esc(r.sheet) + '</a>'
+          : esc(r.sheet)).join(', ') + '</span>');
+      }
+      return '<div class="file"><span class="name">📄 ' + esc(f.name) + '</span>' + parts.join(' ') + '<button class="x" title="Hatao" data-i="' + i + '">×</button></div>';
     }).join('');
-    $('fileList').querySelectorAll('.x').forEach((b) => b.addEventListener('click', () => { state.files.splice(+b.dataset.i, 1); renderFiles(); recompute(); }));
+    $('fileList').querySelectorAll('.x').forEach((b) => b.addEventListener('click', () => { state.files.splice(+b.dataset.i, 1); closeMapper(); renderFiles(); recompute(); }));
+    $('fileList').querySelectorAll('[data-map]').forEach((b) => b.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      const [fi, sheet] = b.dataset.map.split(/\|(.*)/s);
+      openMapper(+fi, sheet);
+    }));
+  }
+
+  // ------------------------------------------------------------ column mapper (unknown formats)
+  function closeMapper() { $('mapCard').hidden = true; state.map = null; }
+
+  function openMapper(fi, sheet) {
+    const f = state.files[fi];
+    const raw = f.raw.find((r) => r.sheet === sheet);
+    if (!raw) return;
+    state.map = { fi, raw, headerRow: raw.headerRow };
+    const saved = store.get('mappings', {})[raw.signature];
+    state.map.cols = saved ? Object.assign({}, saved.cols) : P.suggestMapping(raw.headers);
+    $('mapPlatform').value = saved ? saved.platform || '' : guessPlatform(f.name);
+    $('mapReturns').checked = saved ? !!saved.allReturns : /return|refund|rto/i.test(f.name + ' ' + sheet);
+    $('mapFraction').checked = saved ? !!saved.ratesAreFractions : false;
+    $('mapTitle').textContent = f.name + (f.raw.length > 1 || f.sheets.length ? ' → ' + sheet : '');
+    let opts = '';
+    for (let r = 0; r < Math.min(raw.rows.length, 15); r++) {
+      const cells = (raw.rows[r] || []).filter((c) => String(c).trim() !== '').slice(0, 4).map(String).join(' | ');
+      opts += '<option value="' + r + '">Row ' + (r + 1) + ': ' + esc(cells.slice(0, 70)) + '</option>';
+    }
+    $('mapHeaderRow').innerHTML = opts;
+    $('mapHeaderRow').value = String(state.map.headerRow);
+    renderMapperFields();
+    $('mapCard').hidden = false;
+    $('mapCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function guessPlatform(name) {
+    const m = String(name).match(/myntra|ajio|jiomart|shopsy|nykaa|snapdeal|glowroad|limeroad|tatacliq|flipkart|amazon|meesho/i);
+    return m ? m[0][0].toUpperCase() + m[0].slice(1).toLowerCase() : '';
+  }
+
+  function mapperHeaders() {
+    const row = state.map.raw.rows[state.map.headerRow] || [];
+    return row.map((c, i) => String(c == null || String(c).trim() === '' ? 'Column ' + (i + 1) : c).trim());
+  }
+
+  function renderMapperFields() {
+    const headers = mapperHeaders();
+    const opt = (sel) => '<option value="">— nahi hai —</option>' + headers.map((h, i) => '<option value="' + i + '"' + (sel === i ? ' selected' : '') + '>' + esc(h) + '</option>').join('');
+    $('mapFields').innerHTML = P.MAP_FIELDS.map((fd) => '<label>' + esc(fd.label) + (fd.need ? ' <span class="err-text">*</span>' : '') +
+      '<select data-f="' + fd.f + '">' + opt(state.map.cols[fd.f]) + '</select></label>').join('');
+    $('mapFields').querySelectorAll('select').forEach((sel) => sel.addEventListener('change', () => {
+      if (sel.value === '') delete state.map.cols[sel.dataset.f]; else state.map.cols[sel.dataset.f] = +sel.value;
+      renderMapperPreview();
+    }));
+    renderMapperPreview();
+  }
+
+  function currentMapping() {
+    return { headerRow: state.map.headerRow, cols: state.map.cols, platform: $('mapPlatform').value.trim(), allReturns: $('mapReturns').checked, ratesAreFractions: $('mapFraction').checked };
+  }
+
+  function renderMapperPreview() {
+    const m = currentMapping();
+    const missing = P.MAP_FIELDS.filter((fd) => fd.need && m.cols[fd.f] == null).map((fd) => fd.label);
+    const hasTax = ['gst_rate', 'igst', 'cgst', 'sgst', 'total_tax'].some((k) => m.cols[k] != null);
+    if (!hasTax) missing.push('GST rate ya tax amount (koi ek)');
+    $('mapSave').disabled = missing.length > 0;
+    const parsed = P.applyMapping(state.map.raw.rows, m, 'preview', '');
+    const sample = parsed.records.slice(0, 5);
+    $('mapPreview').innerHTML = (missing.length ? '<div class="issue error">Zaroori: ' + esc(missing.join(', ')) + '</div>' : '') +
+      '<p class="hint">' + parsed.records.length.toLocaleString('en-IN') + ' data rows milengi. Pehli ' + sample.length + ' ka preview:</p>' +
+      table([{ h: 'Row', k: 'row' }, { h: 'Type', k: 'kind' }, { h: 'Date', k: (r) => C.fmtDate(r.date) }, { h: 'State', k: (r) => (r.pos ? stateName(r.pos) : '❌ ' + (r.posRaw || '')) },
+        { h: 'HSN', k: 'hsn' }, { h: 'Qty', k: 'qty' }, { h: 'Rate %', k: (r) => (r.rate == null ? '' : r.rate) }, { h: 'Taxable', k: 'txval', n: 1 }, { h: 'Tax', k: (r) => (r.taxProvided ? r.tax : 'rate se'), n: 1 }], sample);
+  }
+
+  function saveMapping() {
+    const m = currentMapping();
+    const { fi, raw } = state.map;
+    const all = store.get('mappings', {});
+    all[raw.signature] = m;
+    store.set('mappings', all);
+    const f = state.files[fi];
+    const parsed = P.applyMapping(raw.rows, m, f.name, raw.sheetLabel);
+    f.raw = f.raw.filter((r) => r !== raw);
+    f.unrecognized = f.unrecognized.filter((n) => n !== raw.sheet);
+    f.sheets.push({ sheet: raw.sheet, platform: 'generic', label: parsed.label, mapped: true, isReturnFile: parsed.isReturnFile, count: parsed.records.length });
+    f.records = f.records.concat(parsed.records);
+    closeMapper();
+    renderFiles();
+    recompute();
+  }
+
+  function initMapper() {
+    $('mapHeaderRow').addEventListener('change', () => {
+      state.map.headerRow = +$('mapHeaderRow').value;
+      state.map.cols = P.suggestMapping(mapperHeaders());
+      renderMapperFields();
+    });
+    ['mapPlatform', 'mapReturns', 'mapFraction'].forEach((id) => $(id).addEventListener('input', renderMapperPreview));
+    $('mapSave').addEventListener('click', saveMapping);
+    $('mapCancel').addEventListener('click', closeMapper);
+    $('mapCopy').addEventListener('click', () => {
+      const text = 'File: ' + $('mapTitle').textContent + '\nColumns: ' + mapperHeaders().join(' | ');
+      (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(
+        () => { $('mapCopy').textContent = '✓ Copy ho gaya'; setTimeout(() => { $('mapCopy').textContent = 'Column names copy kijiye'; }, 2000); },
+        () => prompt('Ye text copy kijiye:', text));
+    });
   }
 
   // ------------------------------------------------------------ processing
@@ -303,4 +429,5 @@
   $('dlExcel').addEventListener('click', downloadExcel);
   initSettings();
   initFiles();
+  initMapper();
 })();

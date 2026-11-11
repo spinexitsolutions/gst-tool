@@ -58,6 +58,29 @@
       </details>
     </section>
 
+    <!-- Column mapper for unknown report formats -->
+    <section class="card" id="mapCard" hidden>
+      <h2>🧩 Columns chuniye <span class="tag" id="mapTitle"></span></h2>
+      <p class="hint">Is report ka format tool ko pehle se nahi pata. Neeche bataiye kaunsa column kya hai. Tool ne andaaze se pehle hi bhar diya hai, bas check kar lijiye. Ye mapping yaad rakhi jayegi, agle mahine ye report apne aap padhi jayegi.</p>
+      <div class="grid3">
+        <label>Header (column names) kis row mein hai?<select id="mapHeaderRow"></select></label>
+        <label>Platform ka naam<input id="mapPlatform" placeholder="jaise Myntra, JioMart (apni website ho to khali)"></label>
+        <div class="opts col">
+          <label class="chk"><input type="checkbox" id="mapReturns"> Is sheet mein sirf returns / credit notes hain</label>
+          <label class="chk"><input type="checkbox" id="mapFraction"> Rate fraction mein hai (0.18 = 18%)</label>
+        </div>
+      </div>
+      <h3>Column mapping</h3>
+      <div id="mapFields" class="grid3"></div>
+      <h3>Preview</h3>
+      <div id="mapPreview" class="tbl"></div>
+      <div class="actions">
+        <button id="mapSave" class="primary">✓ Mapping save karke data lo</button>
+        <button id="mapCancel">Cancel</button>
+        <button id="mapCopy">Column names copy kijiye</button>
+      </div>
+    </section>
+
     <!-- Step 3 -->
     <section class="card" id="ecoCard" hidden>
       <h2><span class="step">3</span> E-commerce operator (TCS) GSTIN <span class="tag">Table 14</span></h2>

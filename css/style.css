@@ -89,3 +89,7 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #f
 button:disabled { opacity: .5; cursor: not-allowed; }
 .steps li { margin: 6px 0; }
 .foot { color: var(--muted); font-size: 12px; padding: 10px 16px 30px; }
+button.small { padding: 4px 10px; font-size: 12px; }
+.opts.col { flex-direction: column; margin-top: 18px; }
+.badge.generic { background: var(--ok-soft); color: var(--ok); }
+#mapFields select { width: 100%; }

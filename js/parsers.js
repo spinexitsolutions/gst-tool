@@ -166,7 +166,9 @@
   function genericRow(row, h) {
     const { get, n } = makeGetter(row, h);
     const t = key(get('type'));
-    const kind = t.indexOf('return') === 0 || t === 'creditnote' || t === 'refund' ? 'return' : t.indexOf('cancel') === 0 ? 'cancel' : 'sale';
+    const kind = t === 'returncancellation' || t === 'returncancelled' ? 'sale'
+      : /return|refund|creditnote|rto/.test(t) ? 'return'
+        : /cancel/.test(t) ? 'cancel' : 'sale';
     const platform = str(get('platform'));
     const igst = n('igst'); const cgst = n('cgst'); const sgst = n('sgst');
     const taxProvided = h.has('igst', 'cgst', 'sgst') && (igst || cgst || sgst || n('gst_rate') === 0);
@@ -215,23 +217,150 @@
       if (d.platform !== 'generic') rec.ecoKey = d.platform;
       records.push(rec);
     }
-    return { platform: d.platform, isReturnFile: ctx.meeshoReturn, records };
+    return { platform: d.platform, isReturnFile: ctx.meeshoReturn, headerRow: d.headerRow, records };
   }
 
-  /** Parses every sheet of a SheetJS workbook. */
-  function parseWorkbook(XLSX, wb, file) {
-    const result = { file, sheets: [], records: [], unrecognized: [] };
+  /**
+   * Some marketplace exports (notably Flipkart) store a wrong <dimension> such as "A1:BD1",
+   * which makes SheetJS read only the header row. Recompute the range from the actual cells.
+   */
+  function fixSheetRange(XLSX, ws) {
+    let maxR = -1; let maxC = -1;
+    Object.keys(ws).forEach((k) => {
+      if (k[0] === '!') return;
+      const a = XLSX.utils.decode_cell(k);
+      if (a.r > maxR) maxR = a.r;
+      if (a.c > maxC) maxC = a.c;
+    });
+    if (maxR < 0) return false;
+    const want = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxR, c: maxC } });
+    const had = ws['!ref'];
+    if (had) {
+      const r = XLSX.utils.decode_range(had);
+      if (r.e.r >= maxR && r.e.c >= maxC) return false;
+    }
+    ws['!ref'] = want;
+    return true;
+  }
+
+  /** First non-empty row (likely the header), for diagnostics and the column mapper. */
+  function previewHeader(rows) {
+    for (let i = 0; i < Math.min(rows.length, 15); i++) {
+      const filled = (rows[i] || []).filter((c) => String(c).trim() !== '').length;
+      if (filled >= 3) return { headerRow: i, headers: rows[i].map((c) => String(c == null ? '' : c).trim()) };
+    }
+    return { headerRow: 0, headers: (rows[0] || []).map((c) => String(c == null ? '' : c).trim()) };
+  }
+
+  /** Signature used to remember a user's column mapping for the same report layout. */
+  function headerSignature(headers) {
+    return headers.map(key).filter(Boolean).join('|');
+  }
+
+  /**
+   * Parses every sheet of a SheetJS workbook.
+   * mappings: { [headerSignature]: mapping } saved by the user for unknown layouts (see applyMapping).
+   */
+  function parseWorkbook(XLSX, wb, file, mappings) {
+    const result = { file, sheets: [], records: [], unrecognized: [], raw: [] };
     wb.SheetNames.forEach((name) => {
-      const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: '' });
-      const parsed = parseTable(rows, file, wb.SheetNames.length > 1 ? name : '');
-      if (!parsed) { if (rows.length) result.unrecognized.push(name); return; }
-      result.sheets.push({ sheet: name, platform: parsed.platform, isReturnFile: parsed.isReturnFile, count: parsed.records.length });
+      const ws = wb.Sheets[name];
+      const fixed = fixSheetRange(XLSX, ws);
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '', blankrows: false });
+      const sheetLabel = wb.SheetNames.length > 1 ? name : '';
+      let parsed = parseTable(rows, file, sheetLabel);
+      const pv = previewHeader(rows);
+      const sig = headerSignature(pv.headers);
+      if (!parsed && mappings && mappings[sig]) parsed = applyMapping(rows, mappings[sig], file, sheetLabel);
+      if (!parsed) {
+        if (rows.length) {
+          result.unrecognized.push(name);
+          result.raw.push({ sheet: name, sheetLabel, rows, headerRow: pv.headerRow, headers: pv.headers, signature: sig, dataRows: Math.max(0, rows.length - pv.headerRow - 1) });
+        }
+        return;
+      }
+      result.sheets.push({ sheet: name, platform: parsed.platform, label: parsed.label, mapped: !!parsed.mapped, isReturnFile: parsed.isReturnFile, count: parsed.records.length, rangeFixed: fixed, dataRows: Math.max(0, rows.length - (parsed.headerRow || 0) - 1) });
       parsed.records.forEach((r) => result.records.push(r));
     });
     return result;
   }
 
+  // ---------------------------------------------------------------- manual column mapping
+  /** Fields the user can map for an unknown report. `need` = required for a usable result. */
+  const MAP_FIELDS = [
+    { f: 'taxable_value', label: 'Taxable value (tax se pehle)', need: true, hints: ['taxablevalue', 'taxable', 'taxexclusive', 'assessable', 'netsale', 'salevalue'] },
+    { f: 'pos_state', label: 'Customer state (place of supply)', need: true, hints: ['deliverystate', 'shiptostate', 'customerstate', 'placeofsupply', 'pos', 'state', 'billingstate'] },
+    { f: 'gst_rate', label: 'GST rate %', hints: ['gstrate', 'taxrate', 'rate', 'igstrate'] },
+    { f: 'igst', label: 'IGST amount', hints: ['igstamount', 'igsttax', 'igst'] },
+    { f: 'cgst', label: 'CGST amount', hints: ['cgstamount', 'cgsttax', 'cgst'] },
+    { f: 'sgst', label: 'SGST/UTGST amount', hints: ['sgstamount', 'sgsttax', 'utgstamount', 'sgst'] },
+    { f: 'total_tax', label: 'Total tax amount (agar alag-alag nahi hai)', hints: ['totaltax', 'taxamount', 'gstamount'] },
+    { f: 'cess', label: 'Cess amount', hints: ['cessamount', 'cess'] },
+    { f: 'hsn', label: 'HSN code', hints: ['hsn', 'hsncode', 'hsnsac'] },
+    { f: 'qty', label: 'Quantity', hints: ['quantity', 'qty', 'itemquantity', 'units'] },
+    { f: 'invoice_no', label: 'Invoice number', hints: ['invoicenumber', 'invoiceno', 'invoiceid', 'buyerinvoiceid'] },
+    { f: 'invoice_date', label: 'Invoice / order date', hints: ['invoicedate', 'buyerinvoicedate', 'orderdate', 'date'] },
+    { f: 'type', label: 'Type (sale / return / cancel)', hints: ['eventsubtype', 'transactiontype', 'eventtype', 'type', 'ordertype'] },
+    { f: 'order_id', label: 'Order ID', hints: ['orderitemid', 'suborderno', 'orderid', 'suborder'] },
+    { f: 'buyer_gstin', label: 'Buyer GSTIN (B2B)', hints: ['buyergstin', 'customergstin', 'billtogstid', 'businessgst'] },
+    { f: 'seller_gstin', label: 'Seller (aapka) GSTIN', hints: ['sellergstin', 'suppliergstin', 'gstin'] },
+    { f: 'description', label: 'Product description', hints: ['producttitle', 'itemdescription', 'productname', 'description', 'title'] },
+  ];
+
+  /** Best-guess mapping of headers to fields, used to pre-fill the mapper. */
+  function suggestMapping(headers) {
+    const keys = headers.map(key);
+    const used = new Set();
+    const cols = {};
+    MAP_FIELDS.forEach((fd) => {
+      for (const h of fd.hints) {
+        let i = keys.findIndex((k, idx) => !used.has(idx) && k === h);
+        if (i < 0) i = keys.findIndex((k, idx) => !used.has(idx) && k && k.indexOf(h) >= 0 && !/tcs|tds|rate/.test(k.replace(h, '')) );
+        if (i >= 0) { cols[fd.f] = i; used.add(i); break; }
+      }
+    });
+    return cols;
+  }
+
+  /**
+   * Parses rows with a user-defined mapping:
+   * { headerRow, cols: { field: columnIndex }, platform: 'Myntra' | '', allReturns: bool, ratesAreFractions: bool }
+   */
+  function applyMapping(rows, m, file, sheet) {
+    const width = rows.reduce((a, r) => Math.max(a, (r || []).length), 0);
+    const hdr = new Array(width).fill('');
+    Object.keys(m.cols || {}).forEach((f) => { const i = m.cols[f]; if (i != null && i >= 0) hdr[i] = f === 'total_tax' ? '__total_tax' : f; });
+    const h = headerIndex(hdr);
+    const records = [];
+    for (let i = (m.headerRow || 0) + 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.every((c) => c == null || String(c).trim() === '')) continue;
+      const rec = genericRow(row, h);
+      if (m.allReturns && rec.kind === 'sale') {
+        rec.kind = 'return';
+        ['txval', 'tax', 'igst', 'cgst', 'sgst', 'cess', 'qty'].forEach((k) => { rec[k] = -Math.abs(rec[k] || 0); });
+        rec.creditNoteNo = rec.invoiceNo; rec.invoiceNo = '';
+      }
+      const ti = h.find('__total_tax');
+      if (ti >= 0 && !(rec.igst || rec.cgst || rec.sgst)) {
+        const t = C.num(row[ti]);
+        rec.tax = rec.kind === 'sale' ? t : -Math.abs(t);
+        rec.taxProvided = true;
+      }
+      if (rec.rate != null && m.ratesAreFractions && rec.rate > 0 && rec.rate <= 1) rec.rate = Math.round(rec.rate * 100000) / 1000;
+      const plat = String(m.platform || '').trim();
+      rec.ecoKey = plat ? key(plat) : '';
+      rec.ecoLabel = plat;
+      rec.file = file + (sheet ? ' [' + sheet + ']' : '');
+      rec.row = i + 1;
+      rec.platform = 'generic';
+      if (!rec.uqc) rec.uqc = 'NOS';
+      records.push(rec);
+    }
+    return { platform: 'generic', label: m.platform || 'Mapped', mapped: true, isReturnFile: !!m.allReturns, headerRow: m.headerRow || 0, records };
+  }
+
   const GENERIC_TEMPLATE_HEADERS = ['platform', 'invoice_no', 'invoice_date', 'type', 'order_id', 'buyer_gstin', 'pos_state', 'hsn', 'description', 'qty', 'uqc', 'taxable_value', 'gst_rate', 'igst', 'cgst', 'sgst', 'cess'];
 
-  return { parseTable, parseWorkbook, detect, GENERIC_TEMPLATE_HEADERS };
+  return { parseTable, parseWorkbook, detect, fixSheetRange, applyMapping, suggestMapping, headerSignature, MAP_FIELDS, GENERIC_TEMPLATE_HEADERS };
 });
