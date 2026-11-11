@@ -183,6 +183,8 @@
     if (!isValidGSTIN(gstin)) log.add('error', 'GSTIN', 'Aapka GSTIN galat hai (format/checksum fail). Sahi GSTIN daaliye.');
     if (!/^(0[1-9]|1[0-2])\d{4}$/.test(fp)) log.add('error', 'PERIOD', 'Return period (month/year) select kijiye.');
     const homeState = gstin.slice(0, 2);
+    const master = opts.hsnMaster || null; // { code: description } from the official HSN_SAC list
+    const minHsnDigits = opts.aatoAbove5Cr ? 6 : 4;
     const pMonth = +fp.slice(0, 2) - 1; const pYear = +fp.slice(2);
 
     const used = [];
@@ -251,6 +253,12 @@
 
       if (!r.hsn) log.add('warning', 'HSN_MISSING', 'HSN code nahi hai — HSN summary mein "NA" jayega, portal reject kar sakta hai.', ctx);
       else if (!/^\d{4,8}$/.test(r.hsn)) log.add('warning', 'HSN_FORMAT', 'HSN code 4–8 digit ka hona chahiye: "' + r.hsn + '".', ctx);
+      else if (r.hsn.length < minHsnDigits) log.add('warning', 'HSN_DIGITS', 'Turnover ₹5 crore se zyada hai, isliye HSN kam se kam 6 digit ka hona chahiye.', { file: r.file, platform: r.platform, example: ctx.example + ': ' + r.hsn });
+      if (r.hsn && master) {
+        const m = hsnLookup(master, r.hsn);
+        if (!m.found) log.add('error', 'HSN_NOT_IN_MASTER', 'HSN code GST ki official HSN list mein nahi hai — portal JSON reject karega. Sahi HSN daaliye.', { file: r.file, platform: r.platform, example: ctx.example + ': ' + r.hsn });
+        else if (!m.exact) log.add('warning', 'HSN_PARTIAL_MASTER', 'Ye ' + r.hsn.length + '-digit HSN official list mein nahi hai, sirf iska ' + m.code.length + '-digit heading (' + m.code + ') hai. Portal par HSN dropdown se sahi code check kijiye.', { file: r.file, platform: r.platform, example: ctx.example + ': ' + r.hsn });
+      }
 
       let b2b = false;
       if (r.buyerGstin) {
@@ -269,6 +277,8 @@
     stats.used = used.length;
     if (!records.length) log.add('error', 'NO_DATA', 'Koi data nahi mila. Platform ki report files upload kijiye.');
 
+    checkHsnConsistency(used, log);
+
     // Duplicate rows (same platform + order item + event + amount)
     const seen = new Set();
     records.forEach((r) => {
@@ -278,7 +288,7 @@
       seen.add(k);
     });
 
-    const out = buildGstr1(used, { gstin, fp, homeState, ecoGstins, includeDocs: opts.includeDocs !== false, version: opts.version, log });
+    const out = buildGstr1(used, { gstin, fp, homeState, ecoGstins, master, includeDocs: opts.includeDocs !== false, version: opts.version, log });
     out.stats = stats;
     out.issues = log.list();
     out.errorCount = out.issues.filter((i) => i.level === 'error').length;
@@ -318,8 +328,11 @@
       // Table 14: supplies through e-commerce operators (TCS u/s 52)
       if (s.platform !== 'generic' || r.ecoKey) {
         const ek = r.ecoKey || s.platform;
-        const e = ecoMap.get(ek) || Object.assign({ key: ek, label: r.ecoLabel || PLATFORM_LABELS[s.platform] || ek }, zeroAmt());
-        addAmt(e, s); ecoMap.set(ek, e);
+        const e = ecoMap.get(ek) || Object.assign({ key: ek, label: r.ecoLabel || PLATFORM_LABELS[s.platform] || ek, sales: 0, returns: 0, inter: 0, intra: 0 }, zeroAmt());
+        addAmt(e, s);
+        if (s.kind === 'sale') e.sales += s.txval; else e.returns += s.txval;
+        if (s.intra) e.intra += s.txval; else e.inter += s.txval;
+        ecoMap.set(ek, e);
       }
 
       // HSN summary (Table 12) split into B2B / B2C
@@ -413,7 +426,9 @@
 
     const hsnRows = Array.from(hsnMap.values());
     const hsnOut = (list) => list.sort((a, b) => a.hsn_sc.localeCompare(b.hsn_sc) || a.rt - b.rt).map((h, i) => {
-      const o = { num: i + 1, hsn_sc: h.hsn_sc, desc: h.desc || '', user_desc: h.desc || '', uqc: h.uqc, qty: h.qty, rt: h.rt, txval: h.txval, iamt: h.iamt, camt: h.camt, samt: h.samt, csamt: h.csamt };
+      const official = cfg.master ? hsnLookup(cfg.master, h.hsn_sc) : null;
+      const desc = official && official.found ? official.desc : h.desc;
+      const o = { num: i + 1, hsn_sc: h.hsn_sc, desc: String(desc || '').slice(0, 30), user_desc: String(h.desc || desc || '').slice(0, 30), uqc: h.uqc, qty: h.qty, rt: h.rt, txval: h.txval, iamt: h.iamt, camt: h.camt, samt: h.samt, csamt: h.csamt };
       return roundAmt(o);
     });
     const hsn_b2b = hsnOut(hsnRows.filter((h) => h.b2b));
@@ -436,7 +451,8 @@
     const eco = [];
     const ecoRows = Array.from(ecoMap.values()).map((e) => {
       const etin = String(ecoGstins[e.key] || '').trim().toUpperCase();
-      const row = { platform: e.key, label: e.label, etin, suppval: round2(e.txval), igst: round2(e.iamt), cgst: round2(e.camt), sgst: round2(e.samt), cess: round2(e.csamt) };
+      const row = { platform: e.key, label: e.label, etin, suppval: round2(e.txval), igst: round2(e.iamt), cgst: round2(e.camt), sgst: round2(e.samt), cess: round2(e.csamt),
+        sales: round2(e.sales), returns: round2(-e.returns), inter: round2(e.inter), intra: round2(e.intra) };
       if (!etin) log.add('warning', 'ECO_GSTIN_MISSING', e.label + ' ka TCS GSTIN nahi diya — Table 14 mein ye platform nahi jayega. (GST portal → TCS credit received / GSTR-2B mein milta hai.)', { platform: e.key });
       else if (!isValidGSTIN(etin)) log.add('error', 'ECO_GSTIN_INVALID', e.label + ' ka TCS GSTIN galat hai: ' + etin);
       else if (etin.slice(0, 2) !== homeState) log.add('warning', 'ECO_GSTIN_STATE', e.label + ' ka TCS GSTIN aapke state (' + homeState + ') ka nahi hai — aapke state wala GSTIN daaliye.');
@@ -471,7 +487,13 @@
         total: roundAmt(total),
         platforms: Array.from(platMap.values()).map((p) => ({ platform: p.platform, label: p.label, rows: p.rows, sales: roundAmt(p.sales), returns: roundAmt(p.returns), net: roundAmt(p.net) })),
         eco: ecoRows,
-        hsn: hsnRows.map((h) => roundAmt({ type: h.b2b ? 'B2B' : 'B2C', hsn_sc: h.hsn_sc, desc: h.desc, uqc: h.uqc, qty: h.qty, rt: h.rt, txval: h.txval, iamt: h.iamt, camt: h.camt, samt: h.samt, csamt: h.csamt })),
+        hsn: hsnRows.map((h) => {
+          const m = cfg.master ? hsnLookup(cfg.master, h.hsn_sc) : null;
+          const status = !cfg.master ? 'unchecked' : !m.found ? 'invalid' : m.exact ? 'ok' : 'partial';
+          const heading = m && m.found && h.hsn_sc.length > 4 ? cfg.master[h.hsn_sc.slice(0, 4)] : null;
+          const official = m && m.found ? (heading && heading !== m.desc ? heading + ' › ' + m.desc : m.desc) : '';
+          return roundAmt({ type: h.b2b ? 'B2B' : 'B2C', hsn_sc: h.hsn_sc, desc: h.desc, official, status, uqc: h.uqc, qty: h.qty, rt: h.rt, txval: h.txval, iamt: h.iamt, camt: h.camt, samt: h.samt, csamt: h.csamt });
+        }),
         docs: docSeries,
         gstr3b: {
           t31a: roundAmt(taxable),
@@ -480,6 +502,99 @@
         },
       },
     };
+  }
+
+  /** Looks a code up in the official list; falls back to its 6/4/2-digit heading. */
+  function hsnLookup(master, code) {
+    const c = String(code || '');
+    if (master[c] != null) return { found: true, exact: true, code: c, desc: master[c] };
+    for (let len = c.length - 2; len >= 4; len -= 2) {
+      const p = c.slice(0, len);
+      if (master[p] != null) return { found: true, exact: false, code: p, desc: master[p] };
+    }
+    return { found: false, exact: false, code: c, desc: '' };
+  }
+
+  /** Same product (SKU) with different HSN codes, and one HSN sold at several GST rates. */
+  function checkHsnConsistency(rows, log) {
+    const bySku = new Map(); const byHsn = new Map();
+    rows.forEach((s) => {
+      const r = s.src;
+      if (r.hsn && r.sku) {
+        const m = bySku.get(r.sku) || new Map();
+        if (!m.has(r.hsn)) m.set(r.hsn, r.ecoLabel || PLATFORM_LABELS[r.platform]);
+        bySku.set(r.sku, m);
+      }
+      if (r.hsn && s.rate) {
+        const set = byHsn.get(r.hsn) || new Set();
+        set.add(s.rate); byHsn.set(r.hsn, set);
+      }
+    });
+    bySku.forEach((m, sku) => {
+      if (m.size < 2) return;
+      log.add('warning', 'HSN_SKU_CONFLICT', 'Ek hi product (SKU) alag-alag HSN code ke saath bika hai. Har platform par ek hi sahi HSN rakhiye.',
+        { example: 'SKU ' + sku + ': ' + Array.from(m.entries()).map(([h, p]) => h + ' (' + p + ')').join(', ') });
+    });
+    byHsn.forEach((set, hsn) => {
+      if (set.size < 2) return;
+      log.add('info', 'HSN_MULTI_RATE', 'Ek HSN code alag-alag GST rate par bika hai. Kapdon/joote jaise price-based slab mein ye sahi ho sakta hai, warna rate check kijiye.',
+        { example: 'HSN ' + hsn + ': ' + Array.from(set).sort((a, b) => a - b).join('%, ') + '%' });
+    });
+  }
+
+  /** TCS rate (total %) the e-commerce operator collects for a return period 'MMYYYY'. */
+  function tcsRate(fp) {
+    const ym = +String(fp).slice(2) * 100 + +String(fp).slice(0, 2);
+    return ym >= 202407 ? 0.5 : 1; // reduced from 1% to 0.5% w.e.f. 10-Jul-2024
+  }
+
+  /**
+   * Compares sales computed from platform reports with the "TCS credit received" figures
+   * that each e-commerce operator reported on the GST portal (GSTR-8).
+   * portal: { [platformKey]: { gross, returns, net, igst, cgst, sgst } } (any can be blank)
+   */
+  function reconcileTcs(ecoRows, portal, fp) {
+    const rate = tcsRate(fp);
+    return ecoRows.map((e) => {
+      const p = (portal && portal[e.platform]) || {};
+      const has = (k) => p[k] !== '' && p[k] != null && isFinite(num(p[k]));
+      const v = (k) => (has(k) ? num(p[k]) : null);
+      const gross = v('gross'); const returns = v('returns') == null ? null : Math.abs(v('returns'));
+      let net = v('net');
+      if (net == null && gross != null) net = gross - (returns || 0);
+      const expected = { igst: round2(e.inter * rate / 100), cgst: round2(e.intra * rate / 200), sgst: round2(e.intra * rate / 200) };
+      const out = {
+        platform: e.platform, label: e.label, etin: e.etin, rate,
+        ours: { gross: e.sales, returns: e.returns, net: e.suppval, inter: e.inter, intra: e.intra },
+        portal: { gross, returns, net, igst: v('igst'), cgst: v('cgst'), sgst: v('sgst') },
+        expectedTcs: expected, notes: [],
+      };
+      if (net == null) { out.status = 'pending'; return out; }
+
+      out.diffNet = round2(e.suppval - net);
+      const tol = Math.max(100, Math.abs(net) * 0.005);
+      out.status = Math.abs(out.diffNet) <= 1 ? 'match' : Math.abs(out.diffNet) <= tol ? 'minor' : 'mismatch';
+      if (gross != null) out.diffGross = round2(e.sales - gross);
+      if (returns != null) out.diffReturns = round2(e.returns - returns);
+
+      // The TCS amounts tell how the platform split the value between inter-state (IGST) and intra-state (CGST+SGST)
+      const pi = v('igst'); const pc = v('cgst'); const ps = v('sgst');
+      if (pi != null || pc != null || ps != null) {
+        out.diffTcs = { igst: pi == null ? null : round2(expected.igst - pi), cgst: pc == null ? null : round2(expected.cgst - pc), sgst: ps == null ? null : round2(expected.sgst - ps) };
+        out.impliedInter = pi == null ? null : round2(pi * 100 / rate);
+        out.impliedIntra = pc == null && ps == null ? null : round2(((pc || 0) + (ps || 0)) * 100 / rate);
+        const tcsOff = [out.diffTcs.igst, out.diffTcs.cgst, out.diffTcs.sgst].some((d) => d != null && Math.abs(d) > Math.max(5, Math.abs(net) * rate / 100 * 0.01));
+        if (tcsOff) out.notes.push('TCS amount aapki sale ke ' + rate + '% se match nahi karta. Inter-state (IGST) aur same-state (CGST+SGST) ka bantwara check kijiye — platform ne customer state alag maani ho sakti hai.');
+        if (out.status === 'match' && tcsOff) out.status = 'minor';
+      }
+      if (out.status !== 'match') {
+        if (out.diffGross != null && Math.abs(out.diffGross) > tol) out.notes.push('Gross sale mein ₹' + round2(Math.abs(out.diffGross)) + ' ka farak — kuch orders report mein chhoot gaye ya doosre mahine mein gine gaye (shipped vs delivered date). Saari report files upload hui hain na?');
+        if (out.diffReturns != null && Math.abs(out.diffReturns) > tol) out.notes.push('Returns mein ₹' + round2(Math.abs(out.diffReturns)) + ' ka farak — platform pichhle mahine ki sale ke returns is mahine ghata deta hai; cancellation/RTO alag gine ja sakte hain.');
+        if (out.diffNet > 0) out.notes.push('Aapki sale portal se zyada hai — portal par kam TCS dikha hai. Ho sakta hai platform ne kuch orders agle mahine report kiye hon.');
+        else out.notes.push('Portal par sale aapki report se zyada hai — kahin koi report file (B2B, cashback, returns) upload karna to nahi bhoole?');
+      }
+      return out;
+    });
   }
 
   function addLine(doc, s, isNote) {
@@ -530,6 +645,6 @@
   return {
     STATES, VALID_RATES, PLATFORM_LABELS,
     stateCode, isValidGSTIN, gstinChecksum, round2, num, parseDate, fmtDate, snapRate, isValidRate, normKey,
-    processRecords, IssueLog,
+    processRecords, IssueLog, reconcileTcs, tcsRate, hsnLookup,
   };
 });

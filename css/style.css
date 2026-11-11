@@ -93,3 +93,13 @@ button.small { padding: 4px 10px; font-size: 12px; }
 .opts.col { flex-direction: column; margin-top: 18px; }
 .badge.generic { background: var(--ok-soft); color: var(--ok); }
 #mapFields select { width: 100%; }
+input.num { width: 105px; text-align: right; font-variant-numeric: tabular-nums; padding: 6px 8px; }
+.pill { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.pill.match { background: var(--ok-soft); color: var(--ok); }
+.pill.minor { background: var(--warn-soft); color: var(--warn); }
+.pill.mismatch { background: var(--err-soft); color: var(--err); }
+.pill.pending { background: var(--brand-soft); color: var(--brand); }
+tr.note td { white-space: normal; background: var(--warn-soft); font-size: 12px; }
+tr.note ul { margin: 0; padding-left: 18px; }
+.hsnbox { display: flex; flex-direction: column; justify-content: flex-end; gap: 4px; }
+.linkbtn { color: var(--brand); font-weight: 500; cursor: pointer; flex-direction: row; text-decoration: underline; }

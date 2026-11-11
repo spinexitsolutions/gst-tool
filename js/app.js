@@ -7,6 +7,8 @@
 
   const state = { files: [], result: null, tab: 'b2cs' };
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const HSN_STATUS = { ok: '✓ Valid', partial: '⚠ Sirf heading valid', invalid: '❌ List mein nahi', unchecked: '—' };
+  const TCS_STATUS = { match: '✓ Match', minor: '≈ Thoda farak', mismatch: '✗ Match nahi', pending: '… Portal ke figures daaliye' };
   const DOC_TYPES = { 1: 'Invoices for outward supply', 4: 'Debit Note', 5: 'Credit Note' };
 
   const store = {
@@ -32,7 +34,10 @@
     showGstinInfo();
 
     $('gstin').addEventListener('input', () => { $('gstin').value = $('gstin').value.toUpperCase().replace(/\s/g, ''); showGstinInfo(); store.set('gstin', $('gstin').value); recompute(); });
+    $('aato').value = store.get('aato', 'upto5');
+    $('aato').addEventListener('change', () => { store.set('aato', $('aato').value); recompute(); });
     ['month', 'year', 'excludeOut', 'includeDocs'].forEach((id) => $(id).addEventListener('change', recompute));
+    initHsnMaster();
   }
 
   function showGstinInfo() {
@@ -41,6 +46,38 @@
     if (!g) { el.textContent = '15 digit GSTIN daaliye'; el.className = 'hint'; return; }
     if (C.isValidGSTIN(g)) { el.textContent = '✓ Valid — State: ' + C.STATES[g.slice(0, 2)]; el.className = 'hint ok-text'; }
     else { el.textContent = g.length < 15 ? 'Abhi ' + g.length + '/15 characters' : '✗ GSTIN galat hai (checksum match nahi hua)'; el.className = 'hint err-text'; }
+  }
+
+  // ------------------------------------------------------------ official HSN list
+  // Bundled list (js/hsn-master.js); a newer HSN_SAC.xlsx loaded by the user overrides it.
+  function initHsnMaster() {
+    const custom = store.get('hsnMaster', null);
+    state.hsn = custom || window.GST_HSN_MASTER || null;
+    showHsnInfo();
+    $('hsnFile').addEventListener('change', (e) => {
+      const f = e.target.files[0];
+      e.target.value = '';
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const codes = P.parseHsnMaster(XLSX, XLSX.read(new Uint8Array(reader.result), { type: 'array' }));
+          if (Object.keys(codes).length < 1000) throw new Error('isme HSN codes nahi mile');
+          state.hsn = { updated: new Date().toISOString().slice(0, 10), codes, custom: true };
+          store.set('hsnMaster', state.hsn);
+          showHsnInfo();
+          recompute();
+        } catch (err) { alert('HSN list padh nahi paye: ' + err.message); }
+      };
+      reader.readAsArrayBuffer(f);
+    });
+  }
+
+  function showHsnInfo() {
+    const h = state.hsn;
+    $('hsnInfo').innerHTML = h
+      ? '✓ GST ki official HSN/SAC list: <b>' + Object.keys(h.codes).length.toLocaleString('en-IN') + ' codes</b> (' + (h.custom ? 'aapki load ki hui, ' : 'tool ke andar, ') + h.updated + ')'
+      : 'HSN list nahi mili — sirf format check hoga';
   }
 
   function period() { return String($('month').value).padStart(2, '0') + $('year').value; }
@@ -223,6 +260,7 @@
     state.result = C.processRecords(records, {
       gstin: $('gstin').value, period: period(), ecoGstins: ecoGstins(),
       excludeOutOfPeriod: $('excludeOut').checked, includeDocs: $('includeDocs').checked,
+      hsnMaster: state.hsn ? state.hsn.codes : null, aatoAbove5Cr: $('aato').value === 'above5',
     });
     state.records = records;
     render();
@@ -250,6 +288,48 @@
     });
   }
 
+  // ------------------------------------------------------------ TCS credit reconciliation
+  const TCS_FIELDS = [['gross', 'Gross value of supplies'], ['returns', 'Value of supplies returned'], ['net', 'Net amount liable for TCS'], ['igst', 'IGST (TCS)'], ['cgst', 'CGST (TCS)'], ['sgst', 'SGST/UTGST (TCS)']];
+  const tcsKey = () => 'tcs.' + $('gstin').value + '.' + period();
+  function tcsPortal() { return store.get(tcsKey(), {}); }
+
+  function renderTcs() {
+    const eco = state.result.summary.eco;
+    $('tcsCard').hidden = !eco.length;
+    if (!eco.length) return;
+    const saved = tcsPortal();
+    const focused = document.activeElement && document.activeElement.dataset.tcs;
+    const cell = (p, f) => '<td><input class="num" inputmode="decimal" data-tcs="' + esc(p + '|' + f) + '" value="' + esc((saved[p] || {})[f] || '') + '" placeholder="0.00"></td>';
+    $('tcsInputs').innerHTML = '<table><thead><tr><th>Platform (ECO)</th>' + TCS_FIELDS.map(([, l]) => '<th>' + l + '</th>').join('') + '</tr></thead><tbody>' +
+      eco.map((e) => '<tr><td><b>' + esc(e.label) + '</b><div class="hint">' + esc(e.etin || 'GSTIN upar daaliye') + '</div></td>' + TCS_FIELDS.map(([f]) => cell(e.platform, f)).join('') + '</tr>').join('') + '</tbody></table>';
+    $('tcsInputs').querySelectorAll('input').forEach((inp) => {
+      if (inp.dataset.tcs === focused) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+      inp.addEventListener('change', () => {
+        const [p, f] = inp.dataset.tcs.split('|');
+        const all = tcsPortal(); all[p] = all[p] || {}; all[p][f] = inp.value.trim();
+        store.set(tcsKey(), all);
+        renderTcsResult();
+      });
+    });
+    renderTcsResult();
+  }
+
+  function renderTcsResult() {
+    const R = state.result;
+    const rec = C.reconcileTcs(R.summary.eco, tcsPortal(), R.json.fp);
+    const v = (x) => (x == null ? '—' : '₹' + money(x));
+    const diff = (x) => (x == null ? '—' : '<span class="' + (Math.abs(x) <= 1 ? 'ok-text' : 'err-text') + '">' + (x > 0 ? '+' : '') + money(x) + '</span>');
+    const rows = rec.map((t) => '<tr><td><b>' + esc(t.label) + '</b></td><td><span class="pill ' + t.status + '">' + TCS_STATUS[t.status] + '</span></td>' +
+      '<td class="n">' + v(t.ours.gross) + '<div class="hint">portal ' + v(t.portal.gross) + '</div></td>' +
+      '<td class="n">' + v(t.ours.returns) + '<div class="hint">portal ' + v(t.portal.returns) + '</div></td>' +
+      '<td class="n"><b>' + v(t.ours.net) + '</b><div class="hint">portal ' + v(t.portal.net) + '</div></td>' +
+      '<td class="n">' + diff(t.diffNet) + '</td>' +
+      '<td class="n">IGST ' + v(t.expectedTcs.igst) + '<br>CGST ' + v(t.expectedTcs.cgst) + '<br>SGST ' + v(t.expectedTcs.sgst) + '</td>' +
+      '<td class="n">' + (t.diffTcs ? 'IGST ' + diff(t.diffTcs.igst) + '<br>CGST ' + diff(t.diffTcs.cgst) + '<br>SGST ' + diff(t.diffTcs.sgst) : '—') + '</td></tr>' +
+      (t.notes.length ? '<tr class="note"><td colspan="8"><ul>' + t.notes.map((n) => '<li>' + esc(n) + '</li>').join('') + '</ul></td></tr>' : '')).join('');
+    $('tcsResult').innerHTML = '<table><thead><tr><th>Platform</th><th>Status</th><th class="n">Sales</th><th class="n">Returns</th><th class="n">Net taxable</th><th class="n">Farak (reports − portal)</th><th class="n">Expected TCS @' + rec[0].rate + '%</th><th class="n">TCS farak</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
   function table(cols, rows, totalRow) {
     if (!rows.length) return '<p class="hint">Is section mein koi entry nahi hai.</p>';
     const th = cols.map((c) => '<th class="' + (c.n ? 'n' : '') + '">' + esc(c.h) + '</th>').join('');
@@ -270,6 +350,7 @@
     const R = state.result;
     $('results').hidden = false;
     renderEco();
+    renderTcs();
 
     const errs = R.issues.filter((i) => i.level === 'error').length;
     const warns = R.issues.filter((i) => i.level === 'warning').length;
@@ -327,7 +408,10 @@
         break;
       }
       case 'hsn':
-        html = table([{ h: 'B2B/B2C', k: 'type' }, { h: 'HSN', k: 'hsn_sc' }, { h: 'Description', k: 'desc' }, { h: 'UQC', k: 'uqc' }, { h: 'Qty', k: 'qty', n: 1 }, { h: 'Rate %', k: 'rt' }].concat(amtCols), S.hsn, S.hsn.length ? sumRows(S.hsn, amtKeys.concat(['qty'])) : null);
+        html = table([{ h: 'B2B/B2C', k: 'type' }, { h: 'HSN', k: 'hsn_sc' }, { h: 'Official list', k: (r) => (r._label ? '' : HSN_STATUS[r.status]) },
+          { h: 'Official description', k: (r) => String(r.official || '').slice(0, 80) }, { h: 'Product', k: (r) => String(r.desc || '').slice(0, 30) },
+          { h: 'UQC', k: 'uqc' }, { h: 'Qty', k: 'qty', n: 1 }, { h: 'Rate %', k: 'rt' }].concat(amtCols), S.hsn, S.hsn.length ? sumRows(S.hsn, amtKeys.concat(['qty'])) : null) +
+          '<p class="hint">HSN codes GST portal ki official HSN/SAC list se milaye gaye hain. ❌ wale code portal reject karega — platform par product ka HSN theek kijiye.</p>';
         break;
       case 'eco':
         html = table([{ h: 'Platform', k: (r) => r.label || r._label }, { h: 'ECO GSTIN', k: (r) => r.etin || (r._label ? '' : '— nahi diya —') }, { h: 'Net value', k: 'suppval', n: 1 }, { h: 'IGST', k: 'igst', n: 1 }, { h: 'CGST', k: 'cgst', n: 1 }, { h: 'SGST', k: 'sgst', n: 1 }, { h: 'Cess', k: 'cess', n: 1 }], S.eco) +
@@ -388,7 +472,15 @@
     (j.cdnr || []).forEach((c) => c.nt.forEach((i) => i.itms.forEach((it) => b2b.push(Object.assign({ Table: 'CDNR', 'Buyer GSTIN': c.ctin, 'Doc no': i.nt_num, Date: i.nt_dt, POS: stateName(i.pos), 'Doc value': i.val, 'Rate %': it.itm_det.rt }, amt(it.itm_det))))));
     (j.b2cl || []).forEach((c) => c.inv.forEach((i) => i.itms.forEach((it) => b2b.push(Object.assign({ Table: 'B2CL', 'Buyer GSTIN': '', 'Doc no': i.inum, Date: i.idt, POS: stateName(c.pos), 'Doc value': i.val, 'Rate %': it.itm_det.rt }, amt(it.itm_det))))));
     add('B2B-CDNR-B2CL', b2b);
-    add('HSN (Table 12)', S.hsn.map((h) => Object.assign({ Type: h.type, HSN: h.hsn_sc, Description: h.desc, UQC: h.uqc, Qty: h.qty, 'Rate %': h.rt }, amt(h))));
+    add('HSN (Table 12)', S.hsn.map((h) => Object.assign({ Type: h.type, HSN: h.hsn_sc, 'Official list': HSN_STATUS[h.status], 'Official description': h.official, Product: h.desc, UQC: h.uqc, Qty: h.qty, 'Rate %': h.rt }, amt(h))));
+    add('TCS milaan', C.reconcileTcs(S.eco, tcsPortal(), j.fp).map((t) => ({
+      Platform: t.label, 'ECO GSTIN': t.etin, Status: TCS_STATUS[t.status],
+      'Sales (reports)': t.ours.gross, 'Gross (portal)': t.portal.gross, 'Returns (reports)': t.ours.returns, 'Returns (portal)': t.portal.returns,
+      'Net (reports)': t.ours.net, 'Net (portal)': t.portal.net, 'Net farak': t.diffNet,
+      ['Expected TCS IGST (' + t.rate + '%)']: t.expectedTcs.igst, 'TCS IGST (portal)': t.portal.igst,
+      'Expected TCS CGST': t.expectedTcs.cgst, 'TCS CGST (portal)': t.portal.cgst, 'Expected TCS SGST': t.expectedTcs.sgst, 'TCS SGST (portal)': t.portal.sgst,
+      Notes: t.notes.join(' | '),
+    })));
     add('ECO (Table 14)', S.eco.map((e) => ({ Platform: e.label, 'ECO GSTIN': e.etin, 'Net value': e.suppval, IGST: e.igst, CGST: e.cgst, SGST: e.sgst, Cess: e.cess })));
     add('Docs (Table 13)', S.docs.map((d) => ({ Platform: C.PLATFORM_LABELS[d.platform] || d.platform, Type: DOC_TYPES[d.doc_num], From: d.from, To: d.to, Total: d.totnum })));
     add('GSTR-3B', [Object.assign({ Table: '3.1(a)' }, amt(S.gstr3b.t31a)), { Table: '3.1(c) Nil/Exempt', 'Taxable value': S.gstr3b.t31c }]
@@ -404,8 +496,8 @@
 
   function downloadTemplate() {
     const ws = XLSX.utils.aoa_to_sheet([P.GENERIC_TEMPLATE_HEADERS,
-      ['JioMart', 'JM/25-26/0001', '08-10-2025', 'sale', 'JM10001', '', 'Kerala', '61091000', 'Cotton T-Shirt', 1, 'NOS', 476.19, 5, 23.81, '', '', 0],
-      ['', 'WEB/25-26/0001', '16-10-2025', 'return', 'W1001', '', 'Maharashtra', '73239390', 'Steel Bottle', 1, 'NOS', 423.73, 18, '', 38.14, 38.14, 0]]);
+      ['JioMart', 'JM/25-26/0001', '08-10-2025', 'sale', 'JM10001', '', 'Kerala', '61091000', 'TSHIRT-M', 'Cotton T-Shirt', 1, 'NOS', 476.19, 5, 23.81, '', '', 0],
+      ['', 'WEB/25-26/0001', '16-10-2025', 'return', 'W1001', '', 'Maharashtra', '73239390', 'BOTTLE-1L', 'Steel Bottle', 1, 'NOS', 423.73, 18, '', 38.14, 38.14, 0]]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Sales');
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
@@ -415,7 +507,7 @@
       ['type', 'sale ya return'],
       ['buyer_gstin', 'Sirf B2B sale mein buyer ka GSTIN'],
       ['pos_state', 'Customer ka state (naam ya code, jaise Maharashtra / 27)'],
-      ['hsn, description, qty, uqc', 'HSN code, product, quantity, unit (NOS, PCS, KGS...)'],
+      ['hsn, sku, description, qty, uqc', 'HSN code, product code (SKU), product, quantity, unit (NOS, PCS, KGS...)'],
       ['taxable_value', 'Tax se pehle ki value'],
       ['gst_rate', 'GST % (5, 18, 40...)'],
       ['igst / cgst / sgst / cess', 'Tax amounts — khali chhodenge to tool rate se calculate kar lega'],

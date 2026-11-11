@@ -171,3 +171,38 @@ test('sample files: all platforms detected and totals reconcile', () => {
   const meesho = out.summary.platforms.find((p) => p.platform === 'meesho');
   assert.equal(meesho.net.txval, C.round2(285.71 + 571.43 + 285.71 + 338.98 - 285.71));
 });
+
+test('HSN: official master check, partial match, digits by turnover, SKU conflict', () => {
+  const master = { 6109: 'T-shirts, singlets', 61091000: 'Of cotton', 7323: 'Table, kitchen articles of iron' };
+  const out = C.processRecords([
+    rec({ hsn: '61091000', sku: 'TS1' }),
+    rec({ row: 3, hsn: '73239390', sku: 'B1', platform: 'flipkart', ecoKey: 'flipkart' }),
+    rec({ row: 4, hsn: '99999999', sku: 'X' }),
+    rec({ row: 5, hsn: '6105', sku: 'TS1', platform: 'flipkart', ecoKey: 'flipkart' }),
+  ], { gstin: SELLER, period: '102025', hsnMaster: master, aatoAbove5Cr: true });
+  const codes = out.issues.map((i) => i.code);
+  ['HSN_NOT_IN_MASTER', 'HSN_PARTIAL_MASTER', 'HSN_DIGITS', 'HSN_SKU_CONFLICT'].forEach((c) => assert.ok(codes.includes(c), c));
+  const h = out.json.hsn.hsn_b2c.find((x) => x.hsn_sc === '61091000');
+  assert.equal(h.desc, 'Of cotton');
+  assert.equal(out.summary.hsn.find((x) => x.hsn_sc === '99999999').status, 'invalid');
+  assert.equal(out.summary.hsn.find((x) => x.hsn_sc === '73239390').status, 'partial');
+});
+
+test('TCS reconciliation against portal credit (GSTR-8)', () => {
+  const out = C.processRecords([
+    rec({ txval: 10000, tax: 500, cgst: 250, sgst: 250 }), // intra
+    rec({ row: 3, pos: '07', txval: 20000, tax: 1000, igst: 1000, cgst: 0, sgst: 0 }), // inter
+    rec({ row: 4, kind: 'return', pos: '07', txval: -2000, tax: -100, igst: -100, cgst: 0, sgst: 0, creditNoteNo: 'C1' }),
+  ], { gstin: SELLER, period: '102025' });
+  assert.equal(C.tcsRate('102025'), 0.5);
+  assert.equal(C.tcsRate('052024'), 1);
+  const [ok] = C.reconcileTcs(out.summary.eco, { amazon: { gross: 30000, returns: 2000, net: 28000, igst: 90, cgst: 25, sgst: 25 } }, '102025');
+  assert.equal(ok.status, 'match');
+  assert.deepEqual(ok.expectedTcs, { igst: 90, cgst: 25, sgst: 25 });
+  const [bad] = C.reconcileTcs(out.summary.eco, { amazon: { gross: 35000, returns: 2000, net: 33000 } }, '102025');
+  assert.equal(bad.status, 'mismatch');
+  assert.equal(bad.diffNet, -5000);
+  assert.ok(bad.notes.length >= 2);
+  const [pending] = C.reconcileTcs(out.summary.eco, {}, '102025');
+  assert.equal(pending.status, 'pending');
+});

@@ -53,7 +53,10 @@
   }
 
   const signed = (kind, v) => (kind === 'sale' ? v : -Math.abs(v));
-  const cleanHsn = (v) => String(v == null ? '' : v).replace(/\.0+$/, '').replace(/\D/g, '');
+  const cleanHsn = (v) => {
+    const d = String(v == null ? '' : v).replace(/\.0+$/, '').replace(/\D/g, '');
+    return d.length % 2 ? '0' + d : d; // Excel drops the leading 0 of chapters 01-09 (e.g. 0901 -> 901)
+  };
   const str = (v) => (v == null ? '' : String(v).trim());
 
   function makeGetter(row, h) {
@@ -95,6 +98,7 @@
       posRaw, pos: C.stateCode(posRaw),
       hsn: cleanHsn(get('Hsn/sac', 'Hsn/Sac', 'HSN')),
       desc: str(get('Item Description')),
+      sku: str(get('Sku')),
       qty: signed(kind, n('Quantity')),
       rate,
       txval: signed(kind, txval),
@@ -131,6 +135,7 @@
       posRaw, pos: C.stateCode(posRaw),
       hsn: cleanHsn(get('HSN Code')),
       desc: str(get('Product Title/Description', 'Product Title')),
+      sku: str(get('SKU')),
       qty: signed(kind, n('Item Quantity')),
       rate,
       txval: signed(kind, n('Taxable Value*')),
@@ -246,6 +251,7 @@
       posRaw, pos: C.stateCode(posRaw),
       hsn: cleanHsn(get('hsn')),
       desc: str(get('description')),
+      sku: str(get('sku')),
       qty: signed(kind, n('qty', 'quantity')),
       uqc: str(get('uqc')).toUpperCase() || 'NOS',
       rate: rateCell === undefined || rateCell === '' ? null : C.num(rateCell),
@@ -365,7 +371,7 @@
           const gross = Math.abs(r.txval) + Math.abs(r.tax);
           const tx = gross / (1 + s.rate / 100);
           const sign = r.txval < 0 ? -1 : 1;
-          r.txval = sign * tx; r.tax = sign * (gross - tx); r.igst = r.tax; r.taxProvided = true;
+          r.txval = sign * tx; r.tax = sign * (gross - tx); r.igst = 0; r.cgst = 0; r.sgst = 0; r.taxProvided = false; // core splits tax by state
         }
       }
       if (!r.sellerGstin) r.sellerGstin = s.sellerGstin;
@@ -447,7 +453,32 @@
     return { platform: 'generic', label: m.platform || 'Mapped', mapped: true, isReturnFile: !!m.allReturns, headerRow: m.headerRow || 0, records };
   }
 
-  const GENERIC_TEMPLATE_HEADERS = ['platform', 'invoice_no', 'invoice_date', 'type', 'order_id', 'buyer_gstin', 'pos_state', 'hsn', 'description', 'qty', 'uqc', 'taxable_value', 'gst_rate', 'igst', 'cgst', 'sgst', 'cess'];
+  /**
+   * Reads the official HSN/SAC master (HSN_SAC.xlsx from the GST portal) into { code: description }.
+   * Each sheet's code and description columns are found by name.
+   */
+  function parseHsnMaster(XLSX, wb) {
+    const codes = {};
+    wb.SheetNames.forEach((name) => {
+      const ws = wb.Sheets[name];
+      fixSheetRange(XLSX, ws);
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '', blankrows: false });
+      for (let i = 0; i < Math.min(rows.length, 10); i++) {
+        const keys = (rows[i] || []).map(key);
+        const ci = keys.findIndex((k) => /^(hsn|sac)(cd|code|sc|no)?$/.test(k) || k === 'hsnsac' || k === 'hsnsaccode');
+        const di = keys.findIndex((k) => k.indexOf('desc') >= 0);
+        if (ci < 0 || di < 0) continue;
+        for (let j = i + 1; j < rows.length; j++) {
+          const c = cleanHsn(rows[j][ci]);
+          if (c.length >= 2 && c.length <= 8) codes[c] = String(rows[j][di] || '').trim();
+        }
+        break;
+      }
+    });
+    return codes;
+  }
 
-  return { parseTable, parseWorkbook, detect, fixSheetRange, applyMapping, suggestMapping, headerSignature, MAP_FIELDS, GENERIC_TEMPLATE_HEADERS };
+  const GENERIC_TEMPLATE_HEADERS = ['platform', 'invoice_no', 'invoice_date', 'type', 'order_id', 'buyer_gstin', 'pos_state', 'hsn', 'sku', 'description', 'qty', 'uqc', 'taxable_value', 'gst_rate', 'igst', 'cgst', 'sgst', 'cess'];
+
+  return { parseTable, parseWorkbook, parseHsnMaster, detect, fixSheetRange, applyMapping, suggestMapping, headerSignature, MAP_FIELDS, GENERIC_TEMPLATE_HEADERS };
 });

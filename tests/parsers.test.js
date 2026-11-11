@@ -61,7 +61,7 @@ test('header row can be below a title row; unknown sheets return null', () => {
 });
 
 test('generic template: tax optional, platform becomes ECO key', () => {
-  const rows = [P.GENERIC_TEMPLATE_HEADERS, ['JioMart', 'J1', '05-10-2025', 'sale', 'o', '', 'Kerala', '6109', 'Tee', 1, 'NOS', 100, 5, '', '', '', '']];
+  const rows = [P.GENERIC_TEMPLATE_HEADERS, ['JioMart', 'J1', '05-10-2025', 'sale', 'o', '', 'Kerala', '6109', 'TEE-1', 'Tee', 1, 'NOS', 100, 5, '', '', '', '']];
   const { records } = P.parseTable(rows, 'other.csv');
   assert.equal(records[0].ecoKey, 'jiomart');
   assert.equal(records[0].taxProvided, false);

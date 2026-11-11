@@ -31,6 +31,15 @@
           <select id="year"></select>
         </label>
       </div>
+      <div class="grid3" style="margin-top:14px">
+        <label>Pichhle financial year ka turnover (AATO)
+          <select id="aato"><option value="upto5">₹5 crore tak — HSN 4 digit</option><option value="above5">₹5 crore se zyada — HSN 6 digit</option></select>
+        </label>
+        <div class="hsnbox">
+          <div class="hint" id="hsnInfo"></div>
+          <label class="linkbtn">Nayi HSN list load kijiye (optional)<input type="file" id="hsnFile" accept=".xlsx,.xls" hidden></label>
+        </div>
+      </div>
       <div class="opts">
         <label class="chk"><input type="checkbox" id="excludeOut"> Return period ke bahar ki dates wali rows hata do</label>
         <label class="chk"><input type="checkbox" id="includeDocs" checked> Table 13 (Documents issued) bhi JSON mein daalo</label>
@@ -88,6 +97,15 @@
       <div id="ecoInputs" class="grid3"></div>
     </section>
 
+    <!-- TCS reconciliation -->
+    <section class="card" id="tcsCard" hidden>
+      <h2><span class="step">✓</span> TCS credit se sales ka milaan <span class="tag">GSTR-8 vs reports</span></h2>
+      <p class="hint">GST portal → <b>Services → Returns → Returns Dashboard</b> → wahi month chuniye → <b>"TDS and TCS Credit Received"</b> → <b>TCS</b> tab. Har platform (Amazon, Flipkart, Meesho) ki line ke numbers neeche bhar dijiye. Tool aapki report wali sales se milaa kar batayega ki farak kahan hai.</p>
+      <div id="tcsInputs" class="tbl"></div>
+      <h3>Milaan ka result</h3>
+      <div id="tcsResult" class="tbl"></div>
+    </section>
+
     <!-- Results -->
     <section class="card" id="results" hidden>
       <h2><span class="step">4</span> Calculation &amp; verification</h2>
@@ -135,6 +153,7 @@
   <script src="js/vendor/xlsx.full.min.js"></script>
   <script src="js/gst-core.js"></script>
   <script src="js/parsers.js"></script>
+  <script src="js/hsn-master.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
