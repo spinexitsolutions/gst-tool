@@ -23,7 +23,7 @@ Demo ke liye `sample-data/` folder ki saari files ek saath upload kijiye
 | Platform | Report | Notes |
 |---|---|---|
 | Amazon | Seller Central → Reports → Tax Document Library → **MTR** (B2C + B2B) | CSV. Shipment/Refund/Cancel sab samajh leta hai |
-| Flipkart | Seller Hub → Reports → Tax Reports → **Sales Report** | Poori Excel daaliye, "Sales Report" sheet khud dhoondh leta hai |
+| Flipkart | Seller Hub → Reports → Tax Reports → **Sales Report** | Poori Excel daaliye. "Sales Report" aur "Cash Back Report" (cashback ke credit/debit notes) dono padhe jaate hain |
 | Meesho | Supplier Panel → Payments → **GST Report** | `tcs_sales.xlsx` + `tcs_sales_return.xlsx` dono |
 | Baaki sab (JioMart, Myntra, apni website, offline) | Tool ka **template** (`sample-data/other_platforms_template.csv`, ya app mein "Template download") | Tax khali chhodenge to rate se calculate ho jayega |
 
@@ -33,7 +33,8 @@ Demo ke liye `sample-data/` folder ki saari files ek saath upload kijiye
 - **"Format pehchana nahi gaya":** file ke saamne **Columns khud chuniye** dabaiye.
   Tool andaaze se columns pehle hi bhar deta hai (taxable value, state, rate, IGST/CGST/SGST, HSN...). Aap bas check kijiye aur preview dekh kar save kijiye.
   Mapping browser mein yaad rehti hai, isliye agle mahine wahi report apne aap padhi jayegi.
-- Jis file mein ek report sheet pehchan li gayi, uski baaki sheets (Help, Cash Back...) chhod di jaati hain. Zaroorat ho to sheet ke naam par click karke unhe bhi map kar sakte hain.
+- Flipkart ki **Cash Back Report** ab calculation mein shamil hai: credit note sale ko kam karta hai, debit note badhata hai. HSN, state ya rate na ho to usi order ki sale se le liya jaata hai. Ye notes Table 13 mein bhi jaate hain (Debit Note = 4, Credit Note = 5).
+- Jis file mein ek report sheet pehchan li gayi, uski baaki sheets (jaise Help) chhod di jaati hain. Zaroorat ho to sheet ke naam par click karke unhe bhi map kar sakte hain.
 
 ## Tool kya calculate karta hai
 

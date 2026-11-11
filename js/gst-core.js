@@ -222,7 +222,7 @@
       // Rate
       let rate = r.rate;
       if (rate == null || !isFinite(rate) || (rate === 0 && r.tax)) {
-        const inferred = r.txval ? snapRate(Math.abs(r.tax / r.txval) * 100) : null;
+        const inferred = r.txval && r.taxProvided ? snapRate(Math.abs(r.tax / r.txval) * 100) : null;
         if (inferred == null) {
           log.add('error', 'RATE_MISSING', 'GST rate nahi mila aur tax se bhi nikal nahi paya.', ctx);
           rate = 0;
@@ -273,7 +273,7 @@
     const seen = new Set();
     records.forEach((r) => {
       if (!r.itemId) return;
-      const k = [r.platform, r.itemId, r.kind, round2(r.txval), r.invoiceNo].join('|');
+      const k = [r.platform, r.itemId, r.kind, round2(r.txval), r.invoiceNo, r.creditNoteNo, r.debitNoteNo, r.adjustment ? 'adj' : ''].join('|');
       if (seen.has(k)) log.add('warning', 'DUPLICATE', 'Duplicate row mili — kahin same file do baar to upload nahi hui?', { file: r.file, platform: r.platform, example: 'Row ' + r.row + ' (' + r.itemId + ')' });
       seen.add(k);
     });
@@ -508,9 +508,9 @@
     rows.forEach((s) => {
       const r = s.src;
       const isNote = s.kind !== 'sale';
-      const no = isNote ? r.creditNoteNo : r.invoiceNo;
+      const no = r.debitNoteNo || (isNote ? r.creditNoteNo : r.invoiceNo);
       if (!no) return;
-      const docNum = isNote ? 5 : 1; // 1 = invoices for outward supply, 5 = credit notes
+      const docNum = r.debitNoteNo ? 4 : isNote ? 5 : 1; // 1 = invoices for outward supply, 4 = debit notes, 5 = credit notes
       const key = s.platform + '|' + docNum + '|' + no;
       if (seen.has(key)) return;
       seen.add(key);

@@ -118,3 +118,38 @@ test('mapping with only a total tax column and an all-returns sheet', () => {
   assert.equal(out.records[0].tax, -18);
   assert.equal(out.records[0].taxProvided, true);
 });
+
+test('Flipkart Cash Back Report: credit notes reduce, debit notes add, missing HSN/state/rate taken from the sale', () => {
+  const XLSX = require('xlsx');
+  const sales = XLSX.utils.aoa_to_sheet([
+    ['Seller GSTIN', 'Order ID', 'Order Item ID', 'HSN Code', 'Event Type', 'Event Sub Type', 'Item Quantity', 'Taxable Value (Final Invoice Amount -Taxes)', 'IGST Rate', 'IGST Amount', 'Buyer Invoice ID', 'Buyer Invoice Date', "Customer's Delivery State"],
+    ['27AAPFU0939F1ZV', 'OD1', 'I1', '6109', 'Sale', 'Sale', 1, 1000, 5, 50, 'F1', '2025-10-01', 'Gujarat'],
+  ]);
+  const cb = XLSX.utils.aoa_to_sheet([
+    ['Seller GSTIN', 'Order ID', 'Order Item ID', 'Document Type', 'Document Sub Type', 'Credit Note ID/ Debit Note ID', 'Document Date', 'Taxable Value', 'IGST Rate', 'IGST Amount'],
+    ['27AAPFU0939F1ZV', 'OD1', 'I1', 'Credit Note', 'Sale', 'CN-1', '2025-10-05', 100, 5, 5],
+    ['27AAPFU0939F1ZV', 'OD1', 'I1', 'Debit Note', 'Sale', 'DN-1', '2025-10-06', 20, 5, 1],
+  ]);
+  const simple = XLSX.utils.aoa_to_sheet([['Seller GSTIN', 'Order ID', 'Credit Note ID', 'Amount'], ['27AAPFU0939F1ZV', 'OD1', 'CB1', 105]]);
+  const wb = { SheetNames: ['Help', 'Sales Report', 'Cash Back Report'], Sheets: { Help: XLSX.utils.aoa_to_sheet([['help text']]), 'Sales Report': sales, 'Cash Back Report': cb } };
+  const res = P.parseWorkbook(XLSX, wb, 'fk.xlsx');
+  assert.equal(res.sheets.length, 2);
+  const [cn, dn] = res.records.filter((r) => r.adjustment);
+  assert.equal(cn.kind, 'return'); assert.equal(cn.txval, -100); assert.equal(cn.tax, -5); assert.equal(cn.creditNoteNo, 'CN-1');
+  assert.equal(cn.hsn, '6109'); assert.equal(cn.pos, '24');
+  assert.equal(dn.kind, 'sale'); assert.equal(dn.txval, 20); assert.equal(dn.debitNoteNo, 'DN-1'); assert.equal(dn.invoiceNo, '');
+
+  // Tax-inclusive "Amount" only: split using the sale's rate (105 incl. 5% = 100 + 5)
+  const wb2 = { SheetNames: ['Sales Report', 'Cash Back Report'], Sheets: { 'Sales Report': sales, 'Cash Back Report': simple } };
+  const r2 = P.parseWorkbook(XLSX, wb2, 'fk.xlsx').records.find((r) => r.adjustment);
+  assert.equal(r2.rate, 5);
+  assert.equal(Math.round(r2.txval * 100) / 100, -100);
+  assert.equal(Math.round(r2.tax * 100) / 100, -5);
+
+  const C = require('../js/gst-core.js');
+  const out = C.processRecords(res.records, { gstin: '27AAPFU0939F1ZV', period: '102025' });
+  assert.equal(out.errorCount, 0, JSON.stringify(out.issues));
+  assert.deepEqual(out.json.b2cs, [{ sply_ty: 'INTER', rt: 5, typ: 'OE', pos: '24', txval: 920, csamt: 0, iamt: 46 }]);
+  const types = out.json.doc_issue.doc_det.map((d) => d.doc_num).sort();
+  assert.deepEqual(types, [1, 4, 5]);
+});

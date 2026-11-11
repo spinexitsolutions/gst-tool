@@ -32,6 +32,10 @@
   }
 
   const DETECTORS = [
+    // Flipkart "Cash Back Report": credit/debit notes for cashback, issued in the seller's name
+    { platform: 'flipkart', parser: 'flipkartCashback', label: 'Flipkart cashback (CN/DN)',
+      test: (h, sheet) => h.has('Taxable Value*', 'Amount*', 'Cash Back Amount*', 'Cashback Amount*') && !h.has('Event Sub Type') &&
+        ((/cash\s*back/i.test(sheet || '') && h.has('Order ID', 'Order Item ID')) || (h.has('Document Type') && h.has('Order Item ID'))) },
     { platform: 'amazon', test: (h) => h.has('Transaction Type') && h.has('Tax Exclusive Gross', 'Ship To State') },
     { platform: 'flipkart', test: (h) => h.has('Event Sub Type') || (h.has('Event Type') && h.has('Taxable Value*')) },
     { platform: 'meesho', test: (h) => h.has('sub_order_num') && h.has('total_taxable_sale_value') },
@@ -39,11 +43,11 @@
   ];
 
   /** Finds the header row (within the first 15 rows) and the platform it belongs to. */
-  function detect(rows) {
+  function detect(rows, sheet) {
     for (let i = 0; i < Math.min(rows.length, 15); i++) {
       const h = headerIndex((rows[i] || []).map((c) => (c == null ? '' : String(c))));
-      const d = DETECTORS.find((x) => x.test(h));
-      if (d) return { platform: d.platform, headerRow: i, h };
+      const d = DETECTORS.find((x) => x.test(h, sheet));
+      if (d) return { platform: d.platform, parser: d.parser || d.platform, label: d.label, headerRow: i, h };
     }
     return null;
   }
@@ -136,6 +140,60 @@
     };
   }
 
+  // ---------------------------------------------------------------- Flipkart Cash Back Report (credit / debit notes)
+  function flipkartCashbackRow(row, h) {
+    const { get, n } = makeGetter(row, h);
+    const docType = key(get('Document Type'));
+    const subType = key(get('Document Sub Type'));
+    const amountCol = h.has('Taxable Value*') ? null : (h.find('Cash Back Amount*') >= 0 ? 'Cash Back Amount*' : h.find('Cashback Amount*') >= 0 ? 'Cashback Amount*' : 'Amount*');
+    const rawVal = amountCol ? n(amountCol) : n('Taxable Value*');
+
+    // Credit note = cashback given (reduces sale); debit note, or a credit note reversed on return, adds back.
+    let isDebit = docType.indexOf('debit') >= 0;
+    if (!docType && rawVal < 0) isDebit = false;
+    if (/return|cancel|reversal/.test(subType)) isDebit = !isDebit;
+    const kind = isDebit ? 'sale' : 'return';
+
+    const igstRate = n('IGST Rate'); const cgstRate = n('CGST Rate'); const sgstRate = n('SGST Rate*');
+    let rate = igstRate || (cgstRate + sgstRate);
+    if (rate > 0 && rate < 1 && C.snapRate(rate * 100) != null && C.snapRate(rate) == null) rate *= 100;
+    const hasRate = h.has('IGST Rate', 'CGST Rate', 'SGST Rate*');
+
+    let igst = n('IGST Amount'); let cgst = n('CGST Amount'); let sgst = n('SGST Amount*');
+    let txval = Math.abs(rawVal);
+    let taxProvided = h.has('IGST Amount', 'CGST Amount', 'SGST Amount*');
+    if (amountCol && rate) { // amount is tax-inclusive: split it
+      const gross = Math.abs(rawVal);
+      txval = gross / (1 + rate / 100);
+      if (!taxProvided) { igst = gross - txval; cgst = 0; sgst = 0; taxProvided = false; }
+    }
+    igst = Math.abs(igst); cgst = Math.abs(cgst); sgst = Math.abs(sgst);
+    const noteNo = str(get('Credit Note ID*', 'Debit Note ID*', 'Document ID', 'Document Number', 'Note ID', 'Note Number'));
+    const posRaw = str(get("Customer's Delivery State", 'Customers Delivery State', 'Delivery State')) || str(get("Customer's Billing State", 'Billing State'));
+    const date = C.parseDate(get('Credit Note Date*', 'Debit Note Date*', 'Document Date', 'Note Date', 'Invoice Date', 'Buyer Invoice Date', 'Settlement Date', 'Order Date'));
+    return {
+      kind, adjustment: true,
+      invoiceNo: '',
+      creditNoteNo: isDebit ? '' : noteNo,
+      debitNoteNo: isDebit ? noteNo : '',
+      creditNoteDate: date,
+      date,
+      orderId: str(get('Order ID')),
+      itemId: str(get('Order Item ID')),
+      sellerGstin: str(get('Seller GSTIN')).toUpperCase(),
+      buyerGstin: '',
+      posRaw, pos: C.stateCode(posRaw),
+      hsn: cleanHsn(get('HSN Code', 'HSN')),
+      desc: str(get('Product Title/Description', 'Product Title')),
+      qty: 0,
+      rate: hasRate || rate ? rate : null,
+      txval: signed(kind, txval),
+      tax: signed(kind, igst + cgst + sgst), igst: signed(kind, igst), cgst: signed(kind, cgst), sgst: signed(kind, sgst),
+      cess: signed(kind, Math.abs(n('Luxury Cess Amount'))),
+      taxProvided,
+    };
+  }
+
   // ---------------------------------------------------------------- Meesho tcs_sales / tcs_sales_return
   function meeshoRow(row, h, ctx) {
     const { get, n } = makeGetter(row, h);
@@ -198,18 +256,18 @@
     };
   }
 
-  const ROW_PARSERS = { amazon: amazonRow, flipkart: flipkartRow, meesho: meeshoRow, generic: genericRow };
+  const ROW_PARSERS = { amazon: amazonRow, flipkart: flipkartRow, flipkartCashback: flipkartCashbackRow, meesho: meeshoRow, generic: genericRow };
 
   /** Parses one sheet given as an array of arrays. Returns null if the format is not recognised. */
-  function parseTable(rows, file, sheet) {
-    const d = detect(rows);
+  function parseTable(rows, file, sheet, sheetName) {
+    const d = detect(rows, sheetName || sheet);
     if (!d) return null;
     const ctx = { meeshoReturn: d.platform === 'meesho' && (/return/i.test(file || '') || /return/i.test(sheet || '') || d.h.has('cancel_return_date')) };
     const records = [];
     for (let i = d.headerRow + 1; i < rows.length; i++) {
       const row = rows[i];
       if (!row || row.every((c) => c == null || String(c).trim() === '')) continue;
-      const rec = ROW_PARSERS[d.platform](row, d.h, ctx);
+      const rec = ROW_PARSERS[d.parser](row, d.h, ctx);
       rec.file = file + (sheet ? ' [' + sheet + ']' : '');
       rec.row = i + 1;
       rec.platform = d.platform;
@@ -217,7 +275,7 @@
       if (d.platform !== 'generic') rec.ecoKey = d.platform;
       records.push(rec);
     }
-    return { platform: d.platform, isReturnFile: ctx.meeshoReturn, headerRow: d.headerRow, records };
+    return { platform: d.platform, label: d.label, isReturnFile: ctx.meeshoReturn, headerRow: d.headerRow, records };
   }
 
   /**
@@ -268,7 +326,7 @@
       const fixed = fixSheetRange(XLSX, ws);
       const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '', blankrows: false });
       const sheetLabel = wb.SheetNames.length > 1 ? name : '';
-      let parsed = parseTable(rows, file, sheetLabel);
+      let parsed = parseTable(rows, file, sheetLabel, name);
       const pv = previewHeader(rows);
       const sig = headerSignature(pv.headers);
       if (!parsed && mappings && mappings[sig]) parsed = applyMapping(rows, mappings[sig], file, sheetLabel);
@@ -282,7 +340,36 @@
       result.sheets.push({ sheet: name, platform: parsed.platform, label: parsed.label, mapped: !!parsed.mapped, isReturnFile: parsed.isReturnFile, count: parsed.records.length, rangeFixed: fixed, dataRows: Math.max(0, rows.length - (parsed.headerRow || 0) - 1) });
       parsed.records.forEach((r) => result.records.push(r));
     });
+    fillFromSales(result.records);
     return result;
+  }
+
+  /** Credit/debit notes often lack HSN, state or rate — take them from the sale of the same order item. */
+  function fillFromSales(records) {
+    const sales = new Map();
+    records.forEach((r) => {
+      if (r.adjustment || r.kind !== 'sale') return;
+      if (r.itemId) sales.set(r.platform + '|i|' + r.itemId, r);
+      if (r.orderId) sales.set(r.platform + '|o|' + r.orderId, r);
+    });
+    records.forEach((r) => {
+      if (!r.adjustment) return;
+      const s = (r.itemId && sales.get(r.platform + '|i|' + r.itemId)) || (r.orderId && sales.get(r.platform + '|o|' + r.orderId));
+      if (!s) return;
+      if (!r.hsn) r.hsn = s.hsn;
+      if (!r.pos) { r.pos = s.pos; r.posRaw = r.posRaw || s.posRaw; }
+      if (!r.desc) r.desc = s.desc;
+      if (!r.rate && s.rate) {
+        r.rate = s.rate;
+        if (!r.taxProvided) { // recompute the inclusive split with the right rate
+          const gross = Math.abs(r.txval) + Math.abs(r.tax);
+          const tx = gross / (1 + s.rate / 100);
+          const sign = r.txval < 0 ? -1 : 1;
+          r.txval = sign * tx; r.tax = sign * (gross - tx); r.igst = r.tax; r.taxProvided = true;
+        }
+      }
+      if (!r.sellerGstin) r.sellerGstin = s.sellerGstin;
+    });
   }
 
   // ---------------------------------------------------------------- manual column mapping

@@ -7,7 +7,7 @@
 
   const state = { files: [], result: null, tab: 'b2cs' };
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  const DOC_TYPES = { 1: 'Invoices for outward supply', 5: 'Credit Note' };
+  const DOC_TYPES = { 1: 'Invoices for outward supply', 4: 'Debit Note', 5: 'Credit Note' };
 
   const store = {
     get(k, d) { try { const v = localStorage.getItem('gsttool.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -84,7 +84,7 @@
     $('fileList').innerHTML = state.files.map((f, i) => {
       const parts = [];
       f.sheets.forEach((s) => {
-        const label = s.mapped ? (s.label || 'Mapped') : C.PLATFORM_LABELS[s.platform];
+        const label = s.label || (s.mapped ? 'Mapped' : C.PLATFORM_LABELS[s.platform]);
         const where = f.sheets.length > 1 || (s.sheet !== 'Sheet1' && s.sheet) ? ' · ' + esc(s.sheet) : '';
         parts.push('<span class="badge ' + (s.count ? (s.mapped ? 'generic' : s.platform) : 'bad') + '">' + esc(label) + (s.isReturnFile ? ' (returns)' : '') + ' · ' + s.count.toLocaleString('en-IN') + ' rows' + where + '</span>');
         if (s.mapped) parts.push('<span class="hint">aapki column mapping se</span>');
